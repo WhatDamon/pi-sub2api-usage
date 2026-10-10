@@ -30,8 +30,11 @@ export interface RateLimitWindow {
 }
 
 /**
- * 一个可显示的上限窗口（配额 / 订阅周期 / 速率窗口），供 footer 一行渲染。
- * `percent` 是**原始**已用百分比，取整与阀值着色留给渲染层。
+ * A renderable upper-limit window (quota / subscription period / rate window),
+ * shown as one segment of the footer.
+ *
+ * `percent` is the **raw** used percentage; rounding and threshold colouring are
+ * the renderer's job.
  */
 export interface UsageLane {
   label: string
@@ -65,10 +68,17 @@ export class UnrecognizedUsageError extends Error {
 
 const SUB2API_WIRE_MODES = ['quota_limited', 'unrestricted'] as const
 
+/**
+ * The three subscription windows, in display order.
+ *
+ * `label` serves both the detail line and the footer lane. These used to be two
+ * separate fields only because the detail was Chinese ('日') while the footer was
+ * English ('1d'); with both in English they are the same string.
+ */
 const SUBSCRIPTION_WINDOWS = [
-  { key: 'daily', detail: '日', lane: '1d' },
-  { key: 'weekly', detail: '周', lane: '7d' },
-  { key: 'monthly', detail: '月', lane: '1m' },
+  { key: 'daily', label: '1d' },
+  { key: 'weekly', label: '7d' },
+  { key: 'monthly', label: '1m' },
 ] as const
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -77,8 +87,9 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * 读取数值。**缺失返回 null，绝不返回 0** —— `0` 与「未知」是两种不同的语义，
- * 混用会让「今天没消耗」和「后端没给这个字段」在界面上变得无法区分。
+ * Read a number. **A missing value returns null, never 0** — `0` and "unknown"
+ * are two different meanings, and conflating them makes "spent nothing today"
+ * and "the backend did not send this field" indistinguishable in the UI.
  */
 function num(value: unknown): number | null {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null
@@ -168,7 +179,7 @@ function parseRateLimits(value: unknown): RateLimitWindow[] {
   return out
 }
 
-/** `reset_at` 是 ISO 字符串；解析失败返回 null，绝不让 NaN 流进渲染层。 */
+/** `reset_at` is an ISO string; a parse failure returns null so NaN never reaches the renderer. */
 function parseResetAt(value: string | null): number | null {
   if (value === null) return null
   const parsed = Date.parse(value)
@@ -176,13 +187,15 @@ function parseResetAt(value: string | null): number | null {
 }
 
 /**
- * 订阅形态：一次遍历同时产出三个东西——主数值（三窗口剩余的最小值）、
- * 中文明细（给 `/sub2-usage`）与英文窗口（给 footer）。
+ * Subscription mode: one pass produces three things at once — the primary value
+ * (the smallest remaining amount across the three windows), the detail string for
+ * `/sub2-usage`, and the footer lanes.
  *
- * 两者标签不同（`日` vs `1d`），所以不能从 lanes 反推明细；同一次遍历产出
- * 可以避免百分比算两遍，同时保证现有明细字符串逐字不变。
+ * Producing them together keeps the percentages from being computed twice and
+ * guarantees the detail and the lanes can never disagree.
  *
- * `limit` 为负数表示该窗口不限额（后端用 -1 作为哨兵值），不参与最小值计算。
+ * A negative `limit` means the window is uncapped (the backend uses -1 as a
+ * sentinel value); such a window never participates in the minimum.
  */
 function subscriptionParts(subscription: Record<string, unknown>): {
   value: number | null
@@ -193,19 +206,19 @@ function subscriptionParts(subscription: Record<string, unknown>): {
   const lanes: UsageLane[] = []
   let min: number | null = null
 
-  for (const { key, detail, lane } of SUBSCRIPTION_WINDOWS) {
+  for (const { key, label } of SUBSCRIPTION_WINDOWS) {
     const limit = num(subscription[`${key}_limit_usd`])
     const used = num(subscription[`${key}_usage_usd`]) ?? 0
 
     if (limit === null || limit < 0) {
-      parts.push(`${detail} 无限`)
-      lanes.push({ label: lane, percent: null, resetAt: null, unlimited: true })
+      parts.push(`${label} unlimited`)
+      lanes.push({ label, percent: null, resetAt: null, unlimited: true })
       continue
     }
 
     const percent = limit > 0 ? (used / limit) * 100 : 0
-    parts.push(`${detail} ${Math.round(percent)}%`)
-    lanes.push({ label: lane, percent, resetAt: null, unlimited: false })
+    parts.push(`${label} ${Math.round(percent)}%`)
+    lanes.push({ label, percent, resetAt: null, unlimited: false })
 
     const remaining = limit - used
     if (min === null || remaining < min) min = remaining
@@ -215,11 +228,13 @@ function subscriptionParts(subscription: Record<string, unknown>): {
 }
 
 /**
- * 四种计费形态归一化为统一结构。形态互斥，判定顺序固定：
- * quota → rate_limit → subscription → wallet。
+ * Normalise the four billing modes into one shape. The modes are mutually
+ * exclusive and the detection order is fixed:
+ * quota → rate_limit → subscription → wallet.
  *
- * `rateLimits` 只要存在就填充，即使主形态是 quota —— 一个 Key 可以同时
- * 有配额上限和速率上限，两种信息对用户都有用。
+ * `rateLimits` is filled in whenever present, even when the primary mode is
+ * quota — a single key can carry both a quota cap and a rate cap, and both are
+ * useful to the user.
  */
 export function normalize(body: unknown, now?: number): NormalizedUsage {
   const record = asRecord(body)
@@ -243,11 +258,11 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
     mode = 'quota'
     const quotaUsed = quota ? num(quota.used) : null
     primary = {
-      label: '配额剩余',
+      label: 'Quota left',
       value: quota ? num(quota.remaining) : null,
-      detail: `已用 ${show(quotaUsed)} / ${show(quotaLimit)}`,
+      detail: `used ${show(quotaUsed)} / ${show(quotaLimit)}`,
     }
-    // 配额本身没有重置时间戳（只有 expires_at），因此不带倒计时。
+    // Quota itself carries no reset timestamp (only `expires_at`), so no countdown.
     lanes = [
       {
         label: '',
@@ -260,7 +275,7 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
     mode = 'rate_limit'
     const peak = rateLimits.reduce((best, current) => (current.usedRatio > best.usedRatio ? current : best))
     primary = {
-      label: `${peak.window} 窗口剩余`,
+      label: `${peak.window} window left`,
       value: peak.remaining,
       detail: rateLimits.map((w) => `${w.window} ${Math.round(w.usedRatio * 100)}%`).join(' · '),
     }
@@ -273,12 +288,12 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
   } else if (subscription && Object.keys(subscription).length > 0) {
     mode = 'subscription'
     const summary = subscriptionParts(subscription)
-    primary = { label: '订阅剩余', value: summary.value, detail: summary.detail }
+    primary = { label: 'Subscription left', value: summary.value, detail: summary.detail }
     lanes = summary.lanes
   } else {
     mode = 'wallet'
     primary = {
-      label: '钱包余额（多 Key 共享）',
+      label: 'Wallet balance (shared across keys)',
       value: num(record.remaining) ?? num(record.balance),
       detail: undefined,
     }
@@ -289,6 +304,9 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
 
   return {
     mode,
+    // `planName` is a backend-supplied label that we only pass through, never
+    // render ourselves. sub2api returns Chinese names ("钱包余额" for wallet
+    // mode), so the fallback deliberately mirrors the backend's own vocabulary.
     planName: str(record.planName) ?? '钱包余额',
     unit: str(record.unit) ?? 'USD',
     sharedBalance: mode === 'wallet',

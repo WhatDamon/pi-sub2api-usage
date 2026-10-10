@@ -20,7 +20,7 @@ const usage: NormalizedUsage = {
   planName: '钱包余额',
   unit: 'USD',
   sharedBalance: true,
-  primary: { label: '钱包余额（多 Key 共享）', value: 1.88485977, detail: undefined },
+  primary: { label: 'Wallet balance (shared across keys)', value: 1.88485977, detail: undefined },
   today: { requests: 137, totalTokens: 19304722, cost: 0.524918538, actualCost: 0.1312296345 },
   total: { requests: 1326, totalTokens: 127093315, cost: 3.660560046, actualCost: 0.9151400115 },
   daily: [
@@ -49,7 +49,7 @@ const site: SiteCredential = {
 }
 
 describe('visibleWidth', () => {
-  it('ASCII 按 1 列，中文按 2 列，组合字符按 0 列', () => {
+  it('counts ASCII as 1 column, CJK as 2, and combining marks as 0', () => {
     expect(visibleWidth('sub2 $1.88')).toBe(10)
     expect(visibleWidth('今日')).toBe(4)
     expect(visibleWidth('今 $1.88')).toBe(8)
@@ -57,7 +57,7 @@ describe('visibleWidth', () => {
     expect(visibleWidth('（原价）')).toBe(8)
   })
 
-  it('ANSI 转义序列不占可见宽度', () => {
+  it('ANSI escape sequences take no visible width', () => {
     expect(visibleWidth('\x1b[32m$\x1b[0m')).toBe(1)
     expect(visibleWidth('\x1b[32m$1.88\x1b[0m')).toBe(5)
     expect(visibleWidth('\x1b[32m今日\x1b[0m')).toBe(4)
@@ -66,51 +66,51 @@ describe('visibleWidth', () => {
 })
 
 describe('truncateToWidth', () => {
-  it('不超限时原样返回', () => {
+  it('returns the text unchanged when it fits', () => {
     expect(truncateToWidth('abc', 5)).toBe('abc')
   })
 
-  it('超限时按可见宽度截断', () => {
+  it('truncates by visible width when it overflows', () => {
     expect(truncateToWidth('abcde', 3)).toBe('abc')
   })
 
-  it('不会把中文截成半个', () => {
+  it('never cuts a CJK character in half', () => {
     expect(visibleWidth(truncateToWidth('今日余额', 5))).toBeLessThanOrEqual(5)
     expect(truncateToWidth('今日余额', 5)).toBe('今日')
   })
 
-  it('max 为 0 或负数时返回空串', () => {
+  it('returns an empty string when max is 0 or negative', () => {
     expect(truncateToWidth('abc', 0)).toBe('')
     expect(truncateToWidth('abc', -1)).toBe('')
   })
 
-  it('不超限时带色文本原样返回，转义字节完整保留', () => {
+  it('returns coloured text unchanged when it fits, keeping every escape byte intact', () => {
     expect(truncateToWidth('\x1b[32m$1.88\x1b[0m', 40)).toBe('\x1b[32m$1.88\x1b[0m')
   })
 
-  it('不会截断在转义序列中间', () => {
+  it('never truncates in the middle of an escape sequence', () => {
     const out = truncateToWidth('\x1b[32mabcdefghij\x1b[0m', 5)
     expect(out.startsWith('\x1b[32m')).toBe(true)
     expect(out).toContain('abcde')
     expect(out).not.toMatch(/\x1b\[[0-9;]*$/)
   })
 
-  it('截断时闭合颜色，避免污染同一行的其他扩展状态', () => {
+  it('closes the colour on truncation so it cannot leak into another extension on the same line', () => {
     expect(truncateToWidth('\x1b[32mabcdefghij\x1b[0m', 5)).toBe('\x1b[32mabcde\x1b[0m')
   })
 
-  it('带色文本按可见宽度而非字节数截断', () => {
+  it('truncates coloured text by visible width, not by byte count', () => {
     const out = truncateToWidth('\x1b[31m今日余额\x1b[0m', 5)
     expect(visibleWidth(out)).toBeLessThanOrEqual(5)
     expect(out).toContain('今日')
   })
 
-  it('OSC 8 超链接不占可见宽度', () => {
-    expect(visibleWidth('\x1b]8;;https://gw.example.com\x1b\\Sub2 $1.88\x1b]8;;\x1b\\')).toBe(10) // 'Sub2 $1.88' 是 10 个字符
+  it('OSC 8 hyperlinks take no visible width', () => {
+    expect(visibleWidth('\x1b]8;;https://gw.example.com\x1b\\Sub2 $1.88\x1b]8;;\x1b\\')).toBe(10) // 'Sub2 $1.88' is 10 characters
     expect(visibleWidth('\x1b]8;;https://x\x1b\\abc\x1b]8;;\x1b\\')).toBe(3)
   })
 
-  it('不会截断在 OSC 8 序列中间，且截断时闭合链接', () => {
+  it('never truncates inside an OSC 8 sequence and closes the link when cutting', () => {
     const linked = '\x1b]8;;https://gw.example.com\x1b\\Sub2 $1.88\x1b]8;;\x1b\\'
     const out = truncateToWidth(linked, 5)
     expect(visibleWidth(out)).toBeLessThanOrEqual(5)
@@ -132,30 +132,30 @@ describe('formatTokens', () => {
     expect(formatTokens(input)).toBe(expected)
   })
 
-  it('null 显示为破折号', () => {
+  it('renders null as a dash', () => {
     expect(formatTokens(null)).toBe('—')
   })
 })
 
 describe('formatAmount', () => {
-  it('USD 用美元符号，4 位小数', () => {
+  it('uses the dollar sign for USD with 4 decimals', () => {
     expect(formatAmount(1.88485977, 'USD')).toBe('$1.8849')
     expect(formatAmount(0, 'USD')).toBe('$0.0000')
   })
 
-  it('CNY 用人民币符号', () => {
+  it('uses the yuan sign for CNY', () => {
     expect(formatAmount(1.5, 'CNY')).toBe('¥1.5000')
   })
 
-  it('未知单位时前置单位名', () => {
+  it('prefixes the unit name for an unknown unit', () => {
     expect(formatAmount(1.5, 'EUR')).toBe('EUR 1.5000')
   })
 
-  it('null 显示为破折号', () => {
+  it('renders null as a dash', () => {
     expect(formatAmount(null, 'USD')).toBe('—')
   })
 
-  it('位数由调用方决定（余额 2 位、消耗 4 位）', () => {
+  it('lets the caller choose the digit count (2 for balance, 4 for spend)', () => {
     expect(formatAmount(1.88485977, 'USD', 2)).toBe('$1.88')
     expect(formatAmount(0.1312296345, 'USD', 2)).toBe('$0.13')
     expect(formatAmount(0.1312296345, 'USD', 4)).toBe('$0.1312')
@@ -177,11 +177,11 @@ describe('formatCountdown', () => {
     [2 * 86_400_000 + 3 * 3_600_000, '2d3h'],
     [59 * 60_000 + 59_000, '59m'],
     [30_000, '<1m'],
-  ])('剩余 %s ms → %s', (offset, expected) => {
+  ])('remaining %s ms -> %s', (offset, expected) => {
     expect(formatCountdown(at(offset), now)).toBe(expected)
   })
 
-  it('已过期、零剩余或无重置时间时不显示倒计时', () => {
+  it('shows no countdown when expired, at zero remaining, or with no reset time', () => {
     expect(formatCountdown(now, now)).toBeNull()
     expect(formatCountdown(at(-1), now)).toBeNull()
     expect(formatCountdown(at(-86_400_000), now)).toBeNull()
@@ -190,13 +190,13 @@ describe('formatCountdown', () => {
 })
 
 describe('PLAIN_PALETTE', () => {
-  it('不插入任何 ANSI 序列，供非 TUI 路径与测试使用', () => {
+  it('inserts no ANSI at all, for non-TUI paths and tests', () => {
     expect(PLAIN_PALETTE.fg('success', 'x')).toBe('x')
     expect(PLAIN_PALETTE.fg('dim', '$1.88')).toBe('$1.88')
     expect(visibleWidth(PLAIN_PALETTE.fg('error', 'y'))).toBe(1)
   })
 
-  it('Palette 契约：任意 fg 实现都可注入，使色觉断言不必写 ANSI 字面量', () => {
+  it('Palette contract: any fg implementation can be injected, so colour assertions need no ANSI literals', () => {
     const tagged: Palette = { fg: (color, text) => `<${color}>${text}</${color}>` }
     expect(tagged.fg('success', 'x')).toBe('<success>x</success>')
     expect(tagged.fg('error', 'y')).toBe('<error>y</error>')
@@ -217,20 +217,20 @@ describe('formatFooter', () => {
   })
 
   const cases: Array<[string, FooterState, string]> = [
-    ['钱包', state(), 'Sub2 $1.88 · Today $0.1312'],
-    ['钱包陈旧', state({}, true), 'Sub2 ~$1.88 · Today $0.1312'],
-    ['Key 无效', { kind: 'unauthorized' }, 'Sub2 !'],
-    ['失败且无旧值', { kind: 'error', usage: null }, 'Sub2 ?'],
-    ['失败但有旧值', { kind: 'error', usage }, 'Sub2 ~$1.88 · Today $0.1312'],
-    ['未检测到', { kind: 'idle' }, ''],
-    ['配额', state({ mode: 'quota', lanes: [lane('', 62)] }), 'Sub2 62%'],
+    ['wallet', state(), 'Sub2 $1.88 · Today $0.1312'],
+    ['stale wallet', state({}, true), 'Sub2 ~$1.88 · Today $0.1312'],
+    ['invalid key', { kind: 'unauthorized' }, 'Sub2 !'],
+    ['failure with no cached value', { kind: 'error', usage: null }, 'Sub2 ?'],
+    ['failure with a cached value', { kind: 'error', usage }, 'Sub2 ~$1.88 · Today $0.1312'],
+    ['not detected', { kind: 'idle' }, ''],
+    ['quota', state({ mode: 'quota', lanes: [lane('', 62)] }), 'Sub2 62%'],
     [
-      '订阅',
+      'subscription',
       state({ mode: 'subscription', lanes: [lane('1d', 20), lane('7d', 30), lane('1m', 18)] }),
       'Sub2 1d 20% · 7d 30% · 1m 18%',
     ],
     [
-      '速率限制',
+      'rate limit',
       state({ mode: 'rate_limit', lanes: [lane('5h', 82, NOW + 42 * 60_000)] }),
       'Sub2 5h 82% [⟳ 42m]',
     ],
@@ -240,50 +240,51 @@ describe('formatFooter', () => {
     expect(formatFooter(footerState, PLAIN_PALETTE, NOW)).toBe(expected)
   })
 
-  it('全部状态的可见宽度都不超过上限', () => {
+  it('keeps every state within the visible width cap', () => {
     for (const [, footerState] of cases) {
       expect(visibleWidth(formatFooter(footerState, PLAIN_PALETTE, NOW))).toBeLessThanOrEqual(FOOTER_MAX_WIDTH)
     }
   })
 
-  it('非钱包形态不带 Today 段', () => {
+  it('omits the Today segment for non-wallet modes', () => {
     const quota = state({ mode: 'quota', lanes: [lane('', 62)] })
     expect(formatFooter(quota, PLAIN_PALETTE, NOW)).not.toContain('Today')
   })
 
-  it('倒计时已过期时整段省略，而不是显示 0', () => {
+  it('omits the whole countdown when expired rather than showing 0', () => {
     const expired = state({ mode: 'rate_limit', lanes: [lane('5h', 82, NOW - 1)] })
     expect(formatFooter(expired, PLAIN_PALETTE, NOW)).toBe('Sub2 5h 82%')
   })
 
-  it('无限订阅窗口显示 unlimited', () => {
+  it('renders unlimited for an uncapped subscription window', () => {
     const unlimited = state({ mode: 'subscription', lanes: [lane('1d', null, null, true)] })
     expect(formatFooter(unlimited, PLAIN_PALETTE, NOW)).toBe('Sub2 1d unlimited')
   })
 
-  it('余额缺值时只显示 Today 段', () => {
+  it('shows only the Today segment when the balance is missing', () => {
     const partial = state({ primary: { ...usage.primary, value: null } })
     expect(formatFooter(partial, PLAIN_PALETTE, NOW)).toBe('Sub2 Today $0.1312')
   })
 
-  it('今天的实付为 0 时显示 0 而不是省略', () => {
+  it('shows 0 rather than omitting when today spend is exactly 0', () => {
     const zero = state({ today: { ...usage.today!, actualCost: 0 } })
     expect(formatFooter(zero, PLAIN_PALETTE, NOW)).toBe('Sub2 $1.88 · Today $0.0000')
   })
 
-  it('PLAIN_PALETTE 下输出不含任何 ANSI 序列', () => {
+  it('PLAIN_PALETTE output contains no ANSI at all', () => {
     for (const [, footerState] of cases) {
       expect(formatFooter(footerState, PLAIN_PALETTE, NOW)).not.toMatch(/\x1b\[/)
     }
   })
 })
 
-describe('formatFooter 的着色', () => {
+describe('formatFooter colouring', () => {
   const NOW = 1_760_000_000_000
 
   /**
-   * 用真实的零宽 SGR 序列打标。不能用 `<success>…` 这种可见标记：
-   * 标记自身会占可见宽度，让 40 列截断把断言内容切掉；零宽序列才能穿透截断。
+   * Tag with real zero-width SGR sequences. Visible markers like `<success>...` cannot be used:
+   * the marker itself occupies visible width, so the 40-column truncation cuts the assertion
+   * content away; only zero-width sequences survive truncation.
    */
   const SGR: Record<string, string> = {
     success: '\x1b[32m',
@@ -302,30 +303,30 @@ describe('formatFooter 的着色', () => {
   const atPercent = (percent: number): string =>
     render({ mode: 'rate_limit', lanes: [{ label: '5h', percent, resetAt: null, unlimited: false }] })
 
-  it('钱包余额 <$0.5 用 error、<$2 用 warning、否则 success', () => {
+  it('balance <$0.5 error, <$2 warning, otherwise success', () => {
     expect(atBalance(5)).toContain(painted('success', '$5.00'))
     expect(atBalance(1.88)).toContain(painted('warning', '$1.88'))
     expect(atBalance(0.4)).toContain(painted('error', '$0.40'))
   })
 
-  it('阀值不是 USD 时不做严重性判断，用默认色', () => {
+  it('makes no severity judgement when the unit is not USD; uses the default colour', () => {
     expect(atBalance(0.2, 'CNY')).toContain(painted('text', '¥0.20'))
   })
 
-  it('窗口百分比 70% 起 warning、90% 起 error', () => {
+  it('window percentages warn from 70% and error from 90%', () => {
     expect(atPercent(69)).toContain(painted('success', '69%'))
     expect(atPercent(70)).toContain(painted('warning', '70%'))
     expect(atPercent(89)).toContain(painted('warning', '89%'))
     expect(atPercent(90)).toContain(painted('error', '90%'))
   })
 
-  it('标签与 Today 段用 dim 弱化，只有数字跳出来', () => {
+  it('de-emphasises the label and Today segment with dim so the numbers stand out', () => {
     const out = formatFooter({ kind: 'ok', usage, stale: false }, tagged, NOW)
     expect(out.startsWith(`${painted('dim', 'Sub2')} `)).toBe(true)
     expect(out).toContain(painted('dim', 'Today $0.1312'))
   })
 
-  it('窗口标签用 dim、百分比用严重性色、倒计时用 dim', () => {
+  it('window labels dim, percentages in the severity colour, countdown dim', () => {
     const out = render({
       mode: 'rate_limit',
       lanes: [{ label: '5h', percent: 82, resetAt: NOW + 42 * 60_000, unlimited: false }],
@@ -335,13 +336,13 @@ describe('formatFooter 的着色', () => {
     )
   })
 
-  it('Key 无效与失败态整段用 error', () => {
+  it('renders the whole line with error for an invalid key and failure states', () => {
     expect(formatFooter({ kind: 'unauthorized' }, tagged, NOW)).toBe(painted('error', 'Sub2 !'))
     expect(formatFooter({ kind: 'error', usage: null }, tagged, NOW)).toBe(painted('error', 'Sub2 ?'))
     expect(formatFooter({ kind: 'idle' }, tagged, NOW)).toBe('')
   })
 
-  it('带色输出的可见宽度仍然受 40 列约束', () => {
+  it('keeps coloured output within the 40-column cap too', () => {
     const long = render({
       mode: 'subscription',
       lanes: [
@@ -355,33 +356,33 @@ describe('formatFooter 的着色', () => {
 })
 
 describe('formatDetail', () => {
-  it('钱包形态的完整输出', () => {
+  it('full wallet-mode output', () => {
     expect(formatDetail(usage, site)).toBe(
       [
         'sub2api · site-a',
         'https://gw.example.com',
-        '钱包余额（多 Key 共享） $1.88',
-        '今日 137 req · 19.3M tok · 实付 $0.1312（原价 $0.5249）',
-        '累计 1326 req · 127.1M tok · 实付 $0.9151（原价 $3.6606）',
-        '近3日 10-09 $0.0199 · 10-10 $0.3104 · 10-11 $0.1312',
-        '按模型 m-1 $0.9118 · 127.1M tok · 1324 req · m-2 $0.0033 · 1.0K tok · 2 req · m-3 $0.0001 · 10 tok · 1 req',
+        'Wallet balance (shared across keys) $1.88',
+        'Today 137 req · 19.3M tok · spend $0.1312 (list $0.5249)',
+        'Total 1326 req · 127.1M tok · spend $0.9151 (list $3.6606)',
+        'Last 3d 10-09 $0.0199 · 10-10 $0.3104 · 10-11 $0.1312',
+        'By model m-1 $0.9118 · 127.1M tok · 1324 req · m-2 $0.0033 · 1.0K tok · 2 req · m-3 $0.0001 · 10 tok · 1 req',
       ].join('\n'),
     )
   })
 
-  it('缺少 daily 时省略该行', () => {
+  it('omits the line when daily is missing', () => {
     const out = formatDetail({ ...usage, daily: [], byModel: [] }, site)
     expect(out.split('\n')).toHaveLength(5)
-    expect(out).not.toContain('近3日')
+    expect(out).not.toContain('Last 3d')
   })
 
-  it('订阅形态输出 primary 的 detail', () => {
+  it('renders the primary detail for subscription mode', () => {
     const sub: NormalizedUsage = {
       ...usage,
       mode: 'subscription',
       sharedBalance: false,
-      primary: { label: '订阅剩余', value: 4, detail: '日 20% · 周 30% · 月 18%' },
+      primary: { label: 'Subscription left', value: 4, detail: '1d 20% · 7d 30% · 1m 18%' },
     }
-    expect(formatDetail(sub, site)).toContain('订阅剩余 $4.00  日 20% · 周 30% · 月 18%')
+    expect(formatDetail(sub, site)).toContain('Subscription left $4.00  1d 20% · 7d 30% · 1m 18%')
   })
 })

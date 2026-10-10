@@ -15,21 +15,23 @@ export const USER_AGENT = 'pi/1.0.0'
 export const DEFAULT_TIMEOUT_MS = 5000
 
 /**
- * 兜底截止线相对 `timeoutMs` 的宽限。
+ * How much slack the backstop deadline leaves beyond `timeoutMs`.
  *
- * 必须留宽限，否则兜底会抢在 `AbortSignal` 之前触发，
- * 那样超时路径就绕过了真正的连接中断机制。
+ * The slack is essential: without it the backstop would fire before `AbortSignal`
+ * does, and the timeout path would then bypass the mechanism that actually tears the
+ * connection down.
  */
 const TIMEOUT_GRACE_MS = 250
 
 /**
- * 保证 `work` 一定会在有限时间内 settle。
+ * Guarantees `work` settles within a bounded time.
  *
- * `AbortSignal.timeout()` 只能中断**遵守 signal 的** fetch 实现。传输层如果不遵守
- * （某些 DNS 解析器、代理），`await fetch()` 就永不 settle，而 `refresh()` 是
- * fire-and-forget 调用的，一个永不 resolve 的 Promise 会静默卡住所状态机。
- * 这里让 signal 做主力（负责真正中断连接、释放 socket），并额外加一道只负责
- * 「不再等下去」的兜底。
+ * `AbortSignal.timeout()` can only interrupt a fetch implementation that **honours the
+ * signal**. When the transport layer does not (certain DNS resolvers, proxies),
+ * `await fetch()` never settles; because `refresh()` is called fire-and-forget, a
+ * promise that never resolves would silently wedge the whole state machine. So the
+ * signal does the real work (aborting the connection, releasing the socket) and this
+ * adds a backstop whose only job is to stop waiting.
  */
 async function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -47,17 +49,18 @@ async function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> 
   }
 }
 
-/** 把错误文本里出现的 apiKey 换成它的 fingerprint。日志与错误信息只允许出现指纹。 */
+/** Replaces any occurrence of the apiKey in error text with its fingerprint. Logs and error messages may only ever contain the fingerprint. */
 export function scrub(text: string, site: SiteCredential): string {
   if (site.apiKey === '') return text
   return text.replaceAll(site.apiKey, site.fingerprint)
 }
 
 /**
- * 判定响应体是否来自 sub2api。
+ * Decides whether a response body came from sub2api.
  *
- * 唯一判据是顶层 `mode` 字段，不猜域名、不看状态码——非 sub2api 的网关
- * 也会返回 200 + 合法 JSON，靠「有 mode 字段」才能把它们区分开。
+ * The only criterion is the top-level `mode` field: no guessing from the hostname and
+ * no reliance on the status code, because a non-sub2api gateway happily returns 200
+ * with valid JSON. "Has a mode field" is what separates the two.
  */
 export function isSub2ApiBody(body: unknown): boolean {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return false

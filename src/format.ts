@@ -13,42 +13,45 @@ export type FooterState =
 const CURRENCY_SYMBOLS: Record<string, string> = { USD: '$', CNY: '¥' }
 
 /**
- * 语义化配色回调。Pi 的 `Theme`（`fg(color, text)`）结构上直接满足此类型，
- * 所以 footer 能用实时主题着色，而测试可以注入打标调色板精确断言颜色选择，
- * 不必在每条断言里写脆弱的 ANSI 字面量。
+ * Semantic colour callback. Pi's `Theme` (`fg(color, text)`) satisfies this type
+ * structurally, so the footer can be coloured from the live theme while tests can
+ * inject a tagging palette to assert colour choices precisely, without writing
+ * brittle ANSI literals into every assertion.
  */
 export type Palette = {
   fg(color: 'success' | 'warning' | 'error' | 'dim' | 'text', text: string): string
 }
 
-/** 恒等调色板：非 TUI 路径与测试使用，输出不含任何 ANSI 序列。 */
+/** Identity palette: used by non-TUI paths and tests; its output contains no ANSI at all. */
 export const PLAIN_PALETTE: Palette = { fg: (_color, text) => text }
 
 const MINUTE_MS = 60_000
 const HOUR_MS = 60 * MINUTE_MS
 const DAY_MS = 24 * HOUR_MS
 
-/** footer 一律英文（内容短、和其他扩展的状态并排时更好读）。 */
+/** The footer is always English (shorter, and easier to read alongside other extensions' statuses). */
 const FOOTER_PREFIX = 'Sub2'
 
-/** 余额 2 位看概览；消耗 4 位——单轮消耗常在 $0.001~$0.01 量级，2 位会显示成 $0.00。 */
+/** Balance keeps 2 decimals for an at-a-glance overview; spend keeps 4, because one turn often costs $0.001-$0.01 and 2 decimals would render $0.00. */
 const BALANCE_DIGITS = 2
 const COST_DIGITS = 4
 
 /**
- * 余额阀值（仅 USD）。取小额预付费钱包的量级，而非 DeepSeek 那套面向大账户的
- * $10/$5：sub2api 站点常见余额就在几美元，照搬会让 footer 永久发红而失去信息量。
+ * Balance thresholds (USD only). Sized for a small prepaid wallet rather than the
+ * $10/$5 used by large-account balance displays: a typical sub2api balance sits at
+ * a few dollars, so copying those numbers would keep the footer permanently red and
+ * drain it of signal.
  */
 const BALANCE_WARNING_USD = 2
 const BALANCE_ERROR_USD = 0.5
 
-/** 窗口阀值：已用 70% 提醒、90% 告警。 */
+/** Window thresholds: warn from 70% used, error from 90%. */
 const LANE_WARNING_PERCENT = 70
 const LANE_ERROR_PERCENT = 90
 
 type SeverityColor = 'success' | 'warning' | 'error'
 
-/** 绝对阀值只在 USD 下有意义；未知币种不做臆断，用默认色。 */
+/** Absolute thresholds only mean something in USD; for an unknown unit we do not guess and use the default colour. */
 function balanceColor(value: number, unit: string): SeverityColor | 'text' {
   if (unit !== 'USD') return 'text'
   if (value < BALANCE_ERROR_USD) return 'error'
@@ -62,7 +65,7 @@ function laneColor(percent: number): SeverityColor {
   return 'success'
 }
 
-/** 一个窗口：`1d 20%` / `5h 82% [⟳ 42m]` / `1d unlimited`。 */
+/** One window: `1d 20%` / `5h 82% [⟳ 42m]` / `1d unlimited`. */
 function renderLane(lane: UsageLane, palette: Palette, now: number): string {
   const label = lane.label === '' ? '' : `${palette.fg('dim', lane.label)} `
   if (lane.unlimited) return `${label}${palette.fg('dim', 'unlimited')}`
@@ -73,7 +76,7 @@ function renderLane(lane: UsageLane, palette: Palette, now: number): string {
   return `${label}${palette.fg(laneColor(lane.percent), `${Math.round(lane.percent)}%`)}${reset}`
 }
 
-/** 东亚全宽字符区间。命中即占 2 列。 */
+/** East Asian full-width ranges. A hit occupies 2 columns. */
 const WIDE_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x1100, 0x115f],
   [0x2e80, 0xa4cf],
@@ -94,14 +97,16 @@ function charWidth(char: string): number {
   return codePoint >= 0x20000 ? 2 : 1
 }
 
-/** 匹配一条 ANSI SGR 序列，形如 `\x1b[32m`、`\x1b[1;32m`、`\x1b[0m`。 */
+/** Matches one ANSI SGR sequence such as `\x1b[32m`, `\x1b[1;32m` or `\x1b[0m`. */
 const SGR_PATTERN = /^\x1b\[[0-9;]*m/
 
 /**
- * 匹配一条 OSC 8 超链接，形如 `\x1b]8;;URL\x1b\\`（结束序列的 URL 为空）。
+ * Matches one OSC 8 hyperlink such as `\x1b]8;;URL\x1b\\` (the closing sequence
+ * carries an empty URL).
  *
- * OSC 8 **不是**零宽 SGR：不单独识别它的话，URL 的每个字符都会被算成可见列，
- * 让 footer 的宽度限制彻底失真。
+ * OSC 8 is **not** zero-width the way SGR is: without recognising it, every character
+ * of the URL would count as a visible column and the footer width limit would be
+ * meaningless.
  */
 const OSC8_PATTERN = /^\x1b\]8;;([^\x1b\x07]*)(?:\x1b\\|\x07)/
 
@@ -114,7 +119,7 @@ interface Escape {
   kind: EscapeKind
 }
 
-/** `\x1b[0m`、`\x1b[m`、`\x1b[0;0m` 都是重置；其余 SGR 视为打开了某种样式。 */
+/** `\x1b[0m`, `\x1b[m` and `\x1b[0;0m` are all resets; any other SGR counts as opening a style. */
 function isResetSgr(sgr: string): boolean {
   return sgr
     .slice(2, -1)
@@ -122,7 +127,7 @@ function isResetSgr(sgr: string): boolean {
     .every((part) => part === '' || part === '0')
 }
 
-/** 识别位置 `index` 处的转义序列；不是转义序列时返回 null。 */
+/** Recognises the escape sequence at `index`; returns null when there is none. */
 function escapeAt(text: string, index: number): Escape | null {
   const slice = text.slice(index)
 
@@ -136,9 +141,9 @@ function escapeAt(text: string, index: number): Escape | null {
 }
 
 /**
- * 终端可见宽度。**不能用 `String.length`** —— 中文字符占 2 列，
- * 组合字符占 0 列，ANSI 颜色与 OSC 8 链接占 0 列。任何一项算错
- * 都会让 footer 的宽度限制失效。
+ * Terminal visible width. **`String.length` cannot be used here** — CJK characters
+ * take 2 columns, combining marks take 0, and ANSI colour plus OSC 8 links take 0.
+ * Getting any one of those wrong makes the footer width limit meaningless.
  */
 export function visibleWidth(text: string): number {
   let total = 0
@@ -159,10 +164,12 @@ export function visibleWidth(text: string): number {
 }
 
 /**
- * 按可见宽度截断，绝不切出半个全宽字符，也不切断转义序列。
+ * Truncate to a visible width, never emitting half a full-width character and never
+ * cutting an escape sequence in two.
  *
- * 截断处若颜色或超链接仍然开着，必须显式闭合：Pi 会把所有扩展的 status
- * 用空格拼成同一行，未闭合的颜色会泄漏到后面其他扩展的文字上。
+ * If a colour or hyperlink is still open at the cut it must be closed explicitly:
+ * Pi joins every extension's status into one line with spaces, so an unclosed colour
+ * would leak onto whatever another extension renders after us.
  */
 export function truncateToWidth(text: string, max: number): string {
   if (max <= 0) return ''
@@ -206,10 +213,10 @@ export function formatAmount(value: number | null, unit = 'USD', digits = 4): st
 }
 
 /**
- * 重置倒计时，紧凑格式（`42m` / `3h12m` / `2d3h`）。
+ * Reset countdown in a compact format (`42m` / `3h12m` / `2d3h`).
  *
- * 已过期或没有重置时间时返回 `null`，让调用方整体省略这段，
- * 而不是显示一个会让人误以为「刚重置过」的 `0`。
+ * Returns `null` when already expired or when there is no reset time, so the caller
+ * omits the segment entirely rather than printing a `0` that reads as "just reset".
  */
 export function formatCountdown(resetAt: number | null, now: number): string | null {
   if (resetAt === null) return null
@@ -239,10 +246,10 @@ function costPart(bucket: UsageBucket, unit: string): string | null {
   const original = bucket.cost
 
   if (actual !== null && original !== null) {
-    return `实付 ${formatAmount(actual, unit)}（原价 ${formatAmount(original, unit)}）`
+    return `spend ${formatAmount(actual, unit)} (list ${formatAmount(original, unit)})`
   }
-  if (actual !== null) return `实付 ${formatAmount(actual, unit)}`
-  if (original !== null) return `原价 ${formatAmount(original, unit)}`
+  if (actual !== null) return `spend ${formatAmount(actual, unit)}`
+  if (original !== null) return `list ${formatAmount(original, unit)}`
   return null
 }
 
@@ -268,8 +275,9 @@ export function formatFooter(state: FooterState, palette: Palette, now: number):
       segments.push(palette.fg(balanceColor(usage.primary.value, usage.unit), amount))
     }
 
-    // 钱包是后付费，烧钱速度最关键，所以带 Today；上限型形态的主信息是窗口百分比，
-    // 且它们不共用「余额」这个概念，所以不带 Today（明细里仍然有）。
+    // A wallet is pay-as-you-go, so the burn rate matters most: hence the Today
+    // segment. Cap-based modes lead with window percentages and share no "balance"
+    // concept, so they omit Today (it is still available in the detail).
     const todayCost = usage.today?.actualCost ?? null
     if (todayCost !== null) {
       segments.push(palette.fg('dim', `Today ${formatAmount(todayCost, usage.unit, COST_DIGITS)}`))
@@ -295,16 +303,16 @@ export function formatDetail(usage: NormalizedUsage, site: SiteCredential): stri
   const primary = `${usage.primary.label} ${balance(usage.primary.value)}`
   lines.push(usage.primary.detail === undefined ? primary : `${primary}  ${usage.primary.detail}`)
 
-  const today = usageLine('今日', usage.today, usage.unit)
+  const today = usageLine('Today', usage.today, usage.unit)
   if (today !== null) lines.push(today)
 
-  const total = usageLine('累计', usage.total, usage.unit)
+  const total = usageLine('Total', usage.total, usage.unit)
   if (total !== null) lines.push(total)
 
   if (usage.daily.length > 0) {
     const recent = usage.daily.slice(-3)
     const cells = recent.map((day) => `${day.date.slice(5)} ${amount(day.actualCost)}`)
-    lines.push(`近${recent.length}日 ${cells.join(' · ')}`)
+    lines.push(`Last ${recent.length}d ${cells.join(' · ')}`)
   }
 
   if (usage.byModel.length > 0) {
@@ -312,7 +320,7 @@ export function formatDetail(usage: NormalizedUsage, site: SiteCredential): stri
       const cells = `${amount(entry.actualCost)} · ${formatTokens(entry.totalTokens)} tok · ${entry.requests ?? 0} req`
       return `${entry.model} ${cells}`
     })
-    lines.push(`按模型 ${groups.join(' · ')}`)
+    lines.push(`By model ${groups.join(' · ')}`)
   }
 
   return lines.filter((line) => line !== '').join('\n')

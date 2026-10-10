@@ -9,11 +9,11 @@ export interface RefresherDeps {
   resolveSite: (ctx?: ExtensionContext) => Promise<SiteCredential | undefined>
   listSites: (ctx?: ExtensionContext) => Promise<SiteCredential[]>
   fetchImpl?: typeof fetch
-  /** footer 配色。必填，强制接线方显式决定（TUI 用实时主题，其他路径用 PLAIN_PALETTE）。 */
+  /** Footer palette. Required, so the wiring site must decide explicitly (live theme under TUI, PLAIN_PALETTE elsewhere). */
   palette: Palette
   setStatus: (text: string | undefined, link?: string) => void
   timeoutMs?: number
-  /** 供测试注入固定时钟，用于重置倒计时与相对时间；默认 Date.now。 */
+  /** Lets tests inject a fixed clock for reset countdowns and relative times; defaults to Date.now. */
   now?: () => number
 }
 
@@ -23,7 +23,7 @@ export interface Refresher {
   reset(): void
 }
 
-/** 上一次刷新的结局。`describe()` 的文案由它决定，而不是由「有没有旧值」决定。 */
+/** The outcome of the last refresh. `describe()` picks its wording from this, not from whether a cached value happens to exist. */
 type RefreshOutcome =
   | { kind: 'ok' }
   | { kind: 'not-sub2api' }
@@ -39,8 +39,9 @@ function errorText(err: unknown): string {
 }
 
 /**
- * 刷新编排。**`refresh()` 的返回 Promise 永不 reject** —— 它是 fire-and-forget
- * 调用的，未捕获的 rejection 会因 unhandledRejection 终止整个会话。
+ * Refresh orchestration. **The promise returned by `refresh()` never rejects** — it is
+ * called fire-and-forget, and an unhandled rejection would terminate the whole session
+ * via unhandledRejection.
  */
 export function createRefresher(deps: RefresherDeps): Refresher {
   let last: { site: SiteCredential; usage: NormalizedUsage } | undefined
@@ -48,11 +49,13 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   let inFlight: Promise<void> | undefined
 
   /**
-   * 代数计数器。`reset()` 自增它，从而让**在途**的刷新过期。
+   * Generation counter. `reset()` increments it, which expires any **in-flight** refresh.
    *
-   * 没有它会出现两种真实故障：切换模型后旧站点的慢响应返回，把错误的余额写进
-   * 新模型的 footer；以及旧请求结束时无条件清掉 `inFlight`，把新请求的并发去重
-   * 一起清掉（规格 §9 要求同一时刻只允许一次在途请求）。
+   * Without it, two real failures appear: after a model switch the previous site's slow
+   * response lands and writes the wrong balance into the new model's footer; and when
+   * the old request finishes it unconditionally clears `inFlight`, wiping the new
+   * request's concurrency dedup along with it (the spec allows exactly one request in
+   * flight at a time).
    */
   let generation = 0
 
@@ -62,13 +65,13 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     try {
       deps.setStatus(text, link)
     } catch {
-      /* UI 失败不应影响刷新流程 */
+      /* A UI failure must not affect the refresh flow */
     }
   }
 
   const applyFailure = (message: string, link?: string): void => {
     outcome = { kind: 'network-error', message }
-    // 有旧值时 footer 仍指向已知站点；没有则不给链接。
+    // With a cached value the footer still points at a known site; without one there is no link to give.
     const footer = formatFooter({ kind: 'error', usage: last?.usage ?? null }, deps.palette, now())
     status(footer, link ?? last?.site.baseUrl)
   }
@@ -88,7 +91,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
       fetchImpl: deps.fetchImpl,
       timeoutMs: timeoutMs ?? deps.timeoutMs,
     })
-    // 关键关卡：过期请求不得再改动任何状态，包括 footer。
+    // The critical gate: a stale request must not touch any state, footer included.
     if (gen !== generation) return
 
     switch (result.kind) {
@@ -99,7 +102,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
           outcome = { kind: 'ok' }
           status(formatFooter({ kind: 'ok', usage, stale: false }, deps.palette, now()), site.baseUrl)
         } catch {
-          // 判定失败即视为「这不是 sub2api」，静默清空而不是打扰用户。
+          // A failed normalisation counts as "this is not sub2api": clear silently rather than bother the user.
           last = undefined
           outcome = { kind: 'not-sub2api' }
           status('')
@@ -107,7 +110,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
         return
 
       case 'not-sub2api':
-        // 站点已不是 sub2api，旧值不再可信，必须丢弃。
+        // The site is no longer sub2api, so the cached value is no longer trustworthy and must be dropped.
         last = undefined
         outcome = { kind: 'not-sub2api' }
         status('')
@@ -125,9 +128,9 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   }
 
   function describeHeader(): string | undefined {
-    if (outcome?.kind === 'unauthorized') return 'API Key 无效或已过期。'
+    if (outcome?.kind === 'unauthorized') return 'API key is invalid or has expired.'
     if (outcome?.kind === 'network-error' && last) {
-      return `上次成功于 ${minutesAgo(last.usage.fetchedAt, now())} 分钟前`
+      return `Last success ${minutesAgo(last.usage.fetchedAt, now())}m ago`
     }
     return undefined
   }
@@ -135,7 +138,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   async function describeCandidates(): Promise<string> {
     const candidates = await deps.listSites()
 
-    // 并发探测：串行会让不可达的候选把 `/sub2-usage` 拖到 N×超时（规格 §8 要求并发）。
+    // Probe concurrently: serially, unreachable candidates would drag /sub2-usage out to N x timeout (the spec requires concurrency).
     const probed = await Promise.all(
       candidates.map(async (candidate) => ({
         candidate,
@@ -146,7 +149,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
       })),
     )
 
-    const lines: string[] = ['当前模型不是 sub2api 站点。']
+    const lines: string[] = ['The current model is not a sub2api site.']
     let hits = 0
 
     for (const { candidate, result } of probed) {
@@ -158,25 +161,25 @@ export function createRefresher(deps: RefresherDeps): Refresher {
           lines.push(`${candidate.provider} ${candidate.usageUrl} → ${balance}`)
           continue
         } catch {
-          /* normalize 失败按未命中处理 */
+          /* a normalisation failure counts as no match */
         }
       }
 
       const label =
-        result.kind === 'unauthorized' ? 'Key 无效' : result.kind === 'not-sub2api' ? '未命中' : '网络失败'
+        result.kind === 'unauthorized' ? 'invalid key' : result.kind === 'not-sub2api' ? 'no match' : 'network error'
       lines.push(`${candidate.provider} ${candidate.usageUrl} → ${label}`)
     }
 
-    if (hits === 0) lines.push('未在 Pi 配置中发现可用的 sub2api 站点。')
+    if (hits === 0) lines.push('No usable sub2api site found in Pi config.')
     return lines.join('\n')
   }
 
   async function describe(): Promise<string> {
     try {
       if (!last) {
-        // 网络失败且无旧值时，规格 §10 要求把原始错误说出来，而不是去猜候选站点。
+        // On network failure with no cached value the spec requires reporting the raw error rather than guessing at candidate sites.
         if (outcome?.kind === 'network-error') {
-          return `sub2api 用量查询失败：${outcome.message}`
+          return `sub2api usage query failed: ${outcome.message}`
         }
         return await describeCandidates()
       }
@@ -187,7 +190,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
       lines.push(formatDetail(last.usage, last.site))
       return lines.join('\n')
     } catch (err) {
-      return `sub2api 用量查询失败：${errorText(err)}`
+      return `sub2api usage query failed: ${errorText(err)}`
     }
   }
 
@@ -204,7 +207,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     })()
 
     const tracked = started.finally(() => {
-      // 身份比较：只有自己仍是在途请求时才清除，否则会误清后来者的去重状态。
+      // Identity check: only clear when this run is still the in-flight one, otherwise it would wipe a later run's dedup state.
       if (inFlight === tracked) inFlight = undefined
     })
     inFlight = tracked
@@ -230,7 +233,7 @@ export default function createExtension(pi: ExtensionAPI): void {
     modelRegistry: ctx.modelRegistry,
   })
 
-  // 主题必须实时读取：ctx.ui.theme 会随用户切换主题变化，不能在工厂期固化。
+  // The theme must be read live: ctx.ui.theme changes when the user switches themes, so it cannot be frozen at factory time.
   const palette: Palette = {
     fg: (color, text) => (currentCtx?.mode === 'tui' ? currentCtx.ui.theme.fg(color, text) : text),
   }
@@ -244,7 +247,7 @@ export default function createExtension(pi: ExtensionAPI): void {
     },
   })
 
-  // fire-and-forget：refresh 自身保证不 reject，catch 只是第二道保险。
+  // Fire-and-forget: refresh() guarantees it never rejects, so this catch is only a second line of defence.
   const kick = (ctx: ExtensionContext, force: boolean): void => {
     currentCtx = ctx
     void refresher.refresh({ force }).catch(() => {})
@@ -274,19 +277,19 @@ export default function createExtension(pi: ExtensionAPI): void {
       refresher.reset()
       setFooter(ctx, undefined)
     } catch {
-      /* 退出路径上的清理失败不应影响 Pi 关闭 */
+      /* A cleanup failure on the exit path must not affect Pi shutting down */
     }
   })
 
   pi.registerCommand('sub2-usage', {
-    description: '显示当前 sub2api 站点的余额与用量明细',
+    description: 'Show balance and usage detail for the current sub2api site',
     handler: async (_args, ctx) => {
       try {
         currentCtx = ctx
         await refresher.refresh({ force: true })
         notify(ctx, await refresher.describe())
       } catch {
-        /* 命令处理器绝不向 Pi 抛出 */
+        /* A command handler must never throw into Pi */
       }
     },
   })

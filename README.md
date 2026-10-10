@@ -1,117 +1,117 @@
 # pi-sub2api-usage
 
-在 Pi 的 footer 里常驻显示当前 sub2api 站点的余额与用量。**只读**、零配置、零定时器。
+Shows the balance and usage of the current sub2api site, permanently, in Pi's footer. **Read-only**, zero config, zero timers.
 
 ```text
 Sub2 $1.83 · Today $0.1866
 ```
 
-余额按严重性着色：充足为绿、低于 $2 转黄、低于 $0.5 转红。一眼就能看出该不该充值。
+The balance is coloured by severity: healthy is green, below $2 turns yellow, below $0.5 turns red. One glance tells you whether to top up.
 
-## 与 `pi-sub2api` 的区别
+## How it differs from `pi-sub2api`
 
-`pi-sub2api` 类扩展的核心是**注册 provider 与模型发现**：启动时拉 `/v1/models`、判断 wire protocol、写 `auth.json`。余额展示只是它们的副产品。
+Extensions like `pi-sub2api` exist to **register a provider and discover models**: they fetch `/v1/models` on startup, decide on a wire protocol and write `auth.json`. Balance display is only a side effect of that.
 
-这个扩展只做余额这一件事，因此完全不碰流量路径——不注册 provider、不拉模型列表、不改任何推理请求。
+This extension does balance and nothing else, so it stays completely out of the traffic path — no provider registration, no model list, no change to any inference request.
 
-## 安装
+## Install
 
-试用（不写入配置）：
+Try it without touching your config:
 
 ```bash
 pi --extension ./src/index.ts
 ```
 
-作为本地包声明：把这个目录加进 Pi 的扩展列表，或用 `pi install` 指向它。包清单里已声明 `pi.extensions`。
+To declare it as a local package, add this directory to Pi's extension list or point `pi install` at it. The package manifest already declares `pi.extensions`.
 
-## 显示效果
+## What it looks like
 
-footer 内容随站点返回的计费形态变化，四种形态各有对应读法：
+The footer follows whichever billing mode the site reports. Each of the four has its own reading:
 
-| 形态 | footer | 含义 |
+| Mode | Footer | Meaning |
 | --- | --- | --- |
-| 钱包余额 | `Sub2 $1.83 · Today $0.1866` | 可用余额与今日**实付**消耗 |
-| 配额 | `Sub2 62%` | 配额已用百分比 |
-| 订阅 | `Sub2 1d 20% · 7d 30% · 1m 18%` | 日 / 周 / 月 三个窗口各自的已用百分比 |
-| 速率限制 | `Sub2 5h 82% [⟳ 42m]` | 窗口已用百分比与**重置倒计时** |
+| Wallet | `Sub2 $1.83 · Today $0.1866` | Available balance and today's **actual** spend |
+| Quota | `Sub2 62%` | Percentage of the quota used |
+| Subscription | `Sub2 1d 20% · 7d 30% · 1m 18%` | Used percentage of each daily / weekly / monthly window |
+| Rate limit | `Sub2 5h 82% [⟳ 42m]` | Window used percentage and the **reset countdown** |
 
-非钱包形态不带 `Today` 段：它们的核心信息是窗口上限，而且每一行都在和别的扩展共用同一条 footer，保持精简更重要。今日消耗始终能在 `/sub2-usage` 里看到。
+Non-wallet modes omit the `Today` segment: their headline is the window cap, and every extension's status shares one footer line, so brevity wins. Today's spend is always available in `/sub2-usage`.
 
-### 颜色
+### Colours
 
-**余额**按绝对阈值判断严重性（仅当站点报的币种是 USD；其他币种无从判断，用默认色）：
+The **balance** is judged by absolute thresholds, and only when the site reports USD — for any other unit there is nothing to judge against, so the default colour is used:
 
-| 余额 | 颜色 |
+| Balance | Colour |
 | --- | --- |
-| ≥ $2 | 绿（充足） |
-| < $2 | 黄（该充值了） |
-| < $0.5 | 红 |
+| ≥ $2 | green (healthy) |
+| < $2 | yellow (time to top up) |
+| < $0.5 | red |
 
-阈值刻意取得比 DeepSeek 那类大账户显示更小：sub2api 站点常见余额就在几美元，照搬 $10/$5 会让 footer 永久发红而失去信息量。
+The thresholds are deliberately smaller than the $10/$5 used by large-account balance displays: a typical sub2api balance sits at a few dollars, so copying those numbers would keep the footer permanently red and drain it of signal.
 
-**窗口百分比**按已用比例着色：< 70% 绿、≥ 70% 黄、≥ 90% 红。
+**Window percentages** are coloured by used ratio: under 70% green, 70% and above yellow, 90% and above red.
 
-数值精度：**余额 2 位、消耗 4 位**。单轮消耗常在 $0.001~$0.01 量级，余额用 2 位看概览，消耗保留 4 位才看得出变化。
+Precision: **balance 2 decimals, spend 4**. A single turn often costs $0.001–$0.01, so 2 decimals give the balance an at-a-glance overview while 4 keep small spend movements visible.
 
-### 状态标记
+### State markers
 
-| 显示 | 含义 |
+| Display | Meaning |
 | --- | --- |
-| `Sub2 $1.83 · Today $0.1866` | 正常 |
-| `Sub2 ~$1.83 · Today $0.1866` | 刷新失败，`~` 表示显示的是上次成功值 |
-| `Sub2 !` | API Key 无效或已过期 |
-| `Sub2 ?` | 请求失败且没有可用的旧值 |
-| （空） | 当前模型不是 sub2api 站点 |
+| `Sub2 $1.83 · Today $0.1866` | Normal |
+| `Sub2 ~$1.83 · Today $0.1866` | Refresh failed; `~` marks the last successful value |
+| `Sub2 !` | The API key is invalid or has expired |
+| `Sub2 ?` | The request failed and there is no cached value |
+| (empty) | The current model is not a sub2api site |
 
-整个状态文本是一个 OSC 8 超链接，指向站点根地址；终端不支持超链接时自动降级为纯文本。
+The entire status text is an OSC 8 hyperlink pointing at the site root; it degrades to plain text on terminals that do not support hyperlinks.
 
 ### `/sub2-usage`
 
-输出完整明细（余额、今日、累计、近 3 日、按模型），金额主显实付，原价在括号里。当前模型不是 sub2api 站点时，它会列出**探测过的每一个候选站点**及其结果，告诉你为什么没显示：
+Prints the full detail (balance, today, total, last 3 days, by model), leading with the actual spend and showing the list price in parentheses. When the current model is not a sub2api site, it lists **every candidate site it probed** together with the outcome, so you can see why nothing is being displayed:
 
 ```text
-sub2api · dimeta-domestic
+sub2api · site-a
 https://sub2.example.com
-钱包余额（多 Key 共享） $1.83
-今日 198 req · 28.4M tok · 实付 $0.1866（原价 $0.7464）
-累计 1385 req · 136.2M tok · 实付 $0.9672（原价 $3.8688）
-近3日 10-09 $0.1994 · 10-10 $0.5812 · 10-11 $0.1866
-按模型 deepseek-v4.1-flash $0.9672 · 136.2M tok · 1385 req
+Wallet balance (shared across keys) $1.83
+Today 198 req · 28.4M tok · spend $0.1866 (list $0.7464)
+Total 1385 req · 136.2M tok · spend $0.9672 (list $3.8688)
+Last 3d 10-09 $0.1994 · 10-10 $0.5812 · 10-11 $0.1866
+By model m-1 $0.9672 · 136.2M tok · 1385 req
 ```
 
-## 一条重要的语义
+## One important semantic
 
-**余额按用户共享，用量按 API Key。**
+**Balance is shared per user; usage is per API key.**
 
-同一个 sub2api 站点上，如果配置了多个 Key 指向同一账号，它们会返回**完全相同**的余额，但各自的 `usage` / `model_stats` 是分开统计的。所以看到「另一把 Key 余额一样但消耗是 0」不是故障。
+On the same sub2api site, several keys that point at one account all return **exactly the same** balance, while their `usage` and `model_stats` are tracked separately. So "another key reports the same balance but zero spend" is not a fault.
 
-正是因为这个，钱包形态下详情页的余额行会标注「多 Key 共享」。
+That is why the detail line in wallet mode is labelled "shared across keys".
 
-## 前提与要求
+## Requirements
 
-- **需要在 Pi 自己的配置里已经配好 sub2api 站点**（`models.json` 里的 provider，凭证可解析）。扩展不读 CC Switch / Claude Code / Codex 的配置文件。
-- Node ≥ 22.19。
-- 站点需提供 `GET {base}/v1/usage`（接口带 Bearer API Key 认证）。老版本 sub2api 若没有这个端点，会被静默判为「非 sub2api 站点」。
-- `baseUrl` 写成 `https://host` 或 `https://host/v1` 都可以，扩展会自行归一化。
+- **A sub2api site already configured in Pi's own config** — a provider in `models.json` with credentials that can be resolved. The extension does not read CC Switch, Claude Code or Codex config files.
+- Node ≥ 22.19.
+- The site must expose `GET {base}/v1/usage` with Bearer API key auth. An older sub2api without that endpoint is silently classified as "not a sub2api site".
+- `baseUrl` may be written as `https://host` or `https://host/v1`; either is normalised.
 
-## 刷新时机
+## When it refreshes
 
-`session_start`、每轮 agent 结束（`agent_settled`）、切换模型（`model_select`）、以及手动执行 `/sub2-usage`。
+`session_start`, the end of every agent turn (`agent_settled`), on model switch (`model_select`), and when you run `/sub2-usage`.
 
-没有定时器、没有后台轮询——每次会话的正常请求数是「1 + 轮数」，每次超时 5 秒，且第二层候选探测是并发的。所有请求都是 fire-and-forget，不会阻塞对话。
+There are no timers and no background polling — a session issues "1 + number of turns" requests, each with a 5-second timeout, and the second-tier candidate probe is concurrent. Every request is fire-and-forget and never blocks the conversation.
 
-## 安全
+## Security
 
-- 凭证只从 Pi 自身配置读取，只发送到该配置项声明的 `baseUrl`。
-- API Key 只放在 `Authorization` 请求头，绝不进 URL。
-- 任何日志与错误信息只出现 provider 名与 Key 的 sha256 前 8 位指纹，**绝不输出完整 Key**。
-- 不落盘、不写回任何配置文件。
+- Credentials are read only from Pi's own config and sent only to the `baseUrl` that the config entry declares.
+- The API key travels in the `Authorization` header only, never in a URL.
+- Logs and error messages carry only the provider name and the first 8 hex characters of the key's sha256 fingerprint; **the full key is never printed**.
+- Nothing is written to disk and no config file is ever modified.
 
-## 开发
+## Development
 
 ```bash
-npm test          # vitest，全部离线
+npm test          # vitest, fully offline
 npm run typecheck # tsc --noEmit
 ```
 
-扩展不引入任何运行时依赖：`@earendil-works/pi-coding-agent` 与 `@earendil-works/pi-tui` 都由 Pi 在运行时提供（因此只列为 devDependencies）。
+The extension has no runtime dependencies: `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` are both supplied by Pi at runtime, which is why they are only devDependencies.

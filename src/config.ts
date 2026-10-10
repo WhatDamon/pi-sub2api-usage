@@ -17,17 +17,18 @@ export interface CredentialSource {
 }
 
 /**
- * 归一化为 sub2api 的用量端点。
+ * Normalises a sub2api usage endpoint.
  *
- * 用户配置里的 baseUrl 可能带尾斜杠、可能已含 `/v1`、也可能两者都有，
- * 因此先去掉尾部所有 `/`，再去掉尾部重复的 `/v1` 段，最后拼上 `/v1/usage`。
+ * A configured baseUrl may carry a trailing slash, may already include `/v1`, or may
+ * have both. So: strip every trailing `/`, drop a trailing (possibly repeated) `/v1`
+ * segment, then append `/v1/usage`.
  */
 export function normalizeUsageUrl(baseUrl: string): string {
   const root = baseUrl.trim().replace(/\/+$/, '').replace(/(?:\/v1)+$/, '')
   return `${root}/v1/usage`
 }
 
-/** apiKey 的 sha256 前 8 位。仅用于日志与去重，不可逆。 */
+/** The first 8 hex characters of the apiKey's sha256. Used only for logging and deduplication; not reversible. */
 export function keyFingerprint(apiKey: string): string {
   return createHash('sha256').update(apiKey).digest('hex').slice(0, 8)
 }
@@ -52,7 +53,7 @@ async function buildSite(
   }
 }
 
-/** 解析当前模型所属 provider 对应的站点。任何失败都退化为 undefined，不抛出。 */
+/** Resolves the site for the provider the current model belongs to. Any failure degrades to undefined; never throws. */
 export async function resolveCurrentSite(source: CredentialSource): Promise<SiteCredential | undefined> {
   try {
     const model = source.model
@@ -63,7 +64,7 @@ export async function resolveCurrentSite(source: CredentialSource): Promise<Site
   }
 }
 
-/** 列出 Pi 配置中所有可解析凭证的站点，按 provider 去重并保持首次出现顺序。 */
+/** Lists every site with resolvable credentials in Pi's config, deduplicated by provider and keeping first-seen order. */
 export async function listCandidateSites(source: CredentialSource): Promise<SiteCredential[]> {
   try {
     const seen = new Set<string>()

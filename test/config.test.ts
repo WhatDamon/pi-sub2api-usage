@@ -34,7 +34,7 @@ describe('normalizeUsageUrl', () => {
 })
 
 describe('keyFingerprint', () => {
-  it('是 sha256 前 8 位十六进制，且不泄漏原文', () => {
+  it('is the first 8 hex characters of the sha256 and never leaks the original', () => {
     const fp = keyFingerprint('sk-abcdef123456')
     expect(fp).toMatch(/^[0-9a-f]{8}$/)
     expect(fp).not.toContain('sk-')
@@ -44,7 +44,7 @@ describe('keyFingerprint', () => {
 })
 
 describe('resolveCurrentSite', () => {
-  it('解析出 usageUrl 与 fingerprint', async () => {
+  it('resolves usageUrl and fingerprint', async () => {
     const site = await resolveCurrentSite(
       source({ provider: 'site-a', baseUrl: 'https://gw.example.com' }, { 'site-a': 'sk-abcdef123456' }, []),
     )
@@ -57,16 +57,16 @@ describe('resolveCurrentSite', () => {
     })
   })
 
-  it('没有当前模型时返回 undefined', async () => {
+  it('returns undefined when there is no current model', async () => {
     expect(await resolveCurrentSite(source(undefined, {}, []))).toBeUndefined()
   })
 
-  it('取不到 Key 时返回 undefined', async () => {
+  it('returns undefined when no key can be resolved', async () => {
     const src = source({ provider: 'site-a', baseUrl: 'https://gw.example.com' }, {}, [])
     expect(await resolveCurrentSite(src)).toBeUndefined()
   })
 
-  it('modelRegistry 抛错时返回 undefined 而不是抛出', async () => {
+  it('returns undefined instead of throwing when modelRegistry throws', async () => {
     const src: CredentialSource = {
       model: { provider: 'site-a', baseUrl: 'https://gw.example.com' },
       modelRegistry: {
@@ -79,7 +79,7 @@ describe('resolveCurrentSite', () => {
 })
 
 describe('listCandidateSites', () => {
-  it('按 provider 去重，跳过取不到 Key 的 provider，保持首次出现顺序', async () => {
+  it('deduplicates by provider, skips providers with no resolvable key, and keeps first-seen order', async () => {
     const sites = await listCandidateSites(
       source(
         undefined,

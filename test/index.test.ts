@@ -39,27 +39,27 @@ const makeRefresher = (overrides: Partial<Parameters<typeof createRefresher>[0]>
 }
 
 describe('createRefresher', () => {
-  it('成功后把余额写进 footer', async () => {
+  it('writes the balance into the footer on success', async () => {
     const { refresher, statuses } = makeRefresher()
     await refresher.refresh({ force: true })
     expect(statuses.at(-1)).toBe('Sub2 $1.88')
   })
 
-  it('footer 文本附带站点根地址作为可点击链接', async () => {
+  it('attaches the site root as a clickable link on the footer text', async () => {
     const { refresher, links } = makeRefresher()
     await refresher.refresh({ force: true })
     expect(links.at(-1)).toBe('https://gw.example.com')
   })
 
-  it('颜色来自注入的调色板，刷新器不自作主张', async () => {
+  it('takes its colours from the injected palette instead of deciding on its own', async () => {
     const tagged: Palette = { fg: (color, text) => `<${color}>${text}</${color}>` }
     const { refresher, statuses } = makeRefresher({ palette: tagged })
     await refresher.refresh({ force: true })
-    // 1.8848… < $2 → warning；walletBody 没有 today 段
+    // 1.8848... < $2 -> warning; walletBody carries no today segment
     expect(statuses.at(-1)).toBe('<dim>Sub2</dim> <warning>$1.88</warning>')
   })
 
-  it('非钱包形态显示窗口百分比与重置倒计时', async () => {
+  it('shows window percentages and a reset countdown for non-wallet modes', async () => {
     const rateBody = {
       mode: 'quota_limited',
       isValid: true,
@@ -75,19 +75,19 @@ describe('createRefresher', () => {
     expect(statuses.at(-1)).toBe('Sub2 5h 82% [⟳ 42m]')
   })
 
-  it('fetch 永远 reject 时 resolve 而不抛出（未捕获 rejection 会杀死会话）', async () => {
+  it('resolves rather than throwing when fetch always rejects (an unhandled rejection would kill the session)', async () => {
     const alwaysReject = (async () => { throw new Error('network down') }) as unknown as typeof fetch
     const { refresher } = makeRefresher({ fetchImpl: alwaysReject })
     await expect(refresher.refresh({ force: true })).resolves.toBeUndefined()
   })
 
-  it('永远 pending 的 fetch 也不会让 refresh 抛出', async () => {
+  it('a permanently pending fetch does not make refresh throw either', async () => {
     const never = (async () => new Promise(() => {})) as unknown as typeof fetch
     const { refresher } = makeRefresher({ fetchImpl: never })
     await expect(refresher.refresh({ force: true, timeoutMs: 20 })).resolves.toBeUndefined()
   })
 
-  it('检测到非 sub2api 时清空 footer', async () => {
+  it('clears the footer when a non-sub2api site is detected', async () => {
     const notSub2 = (async () =>
       new Response(JSON.stringify({ error: 'nope' }), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
     const { refresher, statuses } = makeRefresher({ fetchImpl: notSub2 })
@@ -95,7 +95,7 @@ describe('createRefresher', () => {
     expect(statuses.at(-1)).toBe('')
   })
 
-  it('未检测到站点时清空 footer 且不带链接', async () => {
+  it('clears the footer with no link when no site is detected', async () => {
     const notSub2 = (async () =>
       new Response(JSON.stringify({ error: 'nope' }), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
     const { refresher, links } = makeRefresher({ fetchImpl: notSub2 })
@@ -103,14 +103,14 @@ describe('createRefresher', () => {
     expect(links.at(-1)).toBeUndefined()
   })
 
-  it('Key 无效时把 footer 置为告警态', async () => {
+  it('puts the footer into its alert state when the key is invalid', async () => {
     const unauth = (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch
     const { refresher, statuses } = makeRefresher({ fetchImpl: unauth })
     await refresher.refresh({ force: true })
     expect(statuses.at(-1)).toBe('Sub2 !')
   })
 
-  it('刷新失败时保留上一次的成功值并加上陈旧标记', async () => {
+  it('keeps the last successful value and marks it stale when a refresh fails', async () => {
     let mode: 'ok' | 'fail' = 'ok'
     const flaky = (async () => {
       if (mode === 'fail') throw new Error('down')
@@ -123,7 +123,7 @@ describe('createRefresher', () => {
     expect(statuses.at(-1)).toBe('Sub2 ~$1.88')
   })
 
-  it('同一时刻只发一次请求，并发调用复用在途 Promise', async () => {
+  it('issues only one request at a time, with concurrent calls reusing the in-flight promise', async () => {
     let calls = 0
     const slow = (async () => {
       calls += 1
@@ -135,7 +135,7 @@ describe('createRefresher', () => {
     expect(calls).toBe(1)
   })
 
-  it('非强制刷新在有在途请求时不会重复发请求', async () => {
+  it('a non-forced refresh does not re-request while one is in flight', async () => {
     let calls = 0
     const slow = (async () => {
       calls += 1
@@ -149,25 +149,25 @@ describe('createRefresher', () => {
     expect(calls).toBe(1)
   })
 
-  it('describe() 返回详情文本，未检测到站点时给出候选列表', async () => {
+  it('describe() returns detail text, listing candidates when no site is detected', async () => {
     const { refresher } = makeRefresher()
     await refresher.refresh({ force: true })
-    expect(await refresher.describe()).toContain('钱包余额')
+    expect(await refresher.describe()).toContain('Wallet balance')
   })
 
-  it('未检测到站点时 describe() 说明原因并列出候选', async () => {
+  it('describe() explains why and lists candidates when no site is detected', async () => {
     const notSub2 = (async () =>
       new Response(JSON.stringify({ error: 'nope' }), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
     const { refresher } = makeRefresher({ fetchImpl: notSub2 })
     await refresher.refresh({ force: true })
     const text = await refresher.describe()
-    expect(text).toContain('不是 sub2api')
+    expect(text).toContain('is not a sub2api site')
     expect(text).toContain('site-a')
   })
 })
 
-describe('工厂函数', () => {
-  it('不注册任何长驻资源，只注册一个命令与四个事件', () => {
+describe('factory', () => {
+  it('registers no long-lived resources, only one command and four events', () => {
     const commands: string[] = []
     const events: string[] = []
     const pi = {
@@ -179,7 +179,7 @@ describe('工厂函数', () => {
     expect(events.sort()).toEqual(['agent_settled', 'model_select', 'session_shutdown', 'session_start'])
   })
 
-  it('工厂函数体内不发网络请求', () => {
+  it('performs no network request inside the factory body', () => {
     const spy = vi.fn()
     const original = globalThis.fetch
     globalThis.fetch = spy as never
@@ -192,7 +192,7 @@ describe('工厂函数', () => {
   })
 })
 
-describe('修复轮：审查发现', () => {
+describe('fix round: review findings', () => {
   const jsonResponse = (body: unknown): Response =>
     new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
 
@@ -200,7 +200,7 @@ describe('修复轮：审查发现', () => {
     for (let i = 0; i < 500 && !predicate(); i += 1) await Promise.resolve()
   }
 
-  it('#1 reset() 使在途请求失效：旧站点的慢响应不得覆盖新站点的 footer', async () => {
+  it('#1 reset() expires the in-flight request: a slow response from the old site must not overwrite the new site footer', async () => {
     const statuses: Array<string | undefined> = []
     let provider = 'slow-a'
     let markDispatched: (() => void) | undefined
@@ -223,7 +223,7 @@ describe('修复轮：审查发现', () => {
     })
 
     const stale = refresher.refresh({ force: true })
-    await dispatched // 确保旧站点的请求已经发出
+    await dispatched // make sure the old site request has been dispatched
     refresher.reset()
     provider = 'fast-b'
     await refresher.refresh({ force: true })
@@ -231,10 +231,10 @@ describe('修复轮：审查发现', () => {
 
     releaseSlow?.()
     await stale
-    expect(statuses.at(-1)).toBe('Sub2 $222.00') // 旧响应不得覆盖
+    expect(statuses.at(-1)).toBe('Sub2 $222.00') // the stale response must not overwrite
   })
 
-  it('#1 旧请求结束时不得清掉新请求的 inFlight（否则并发去重失效）', async () => {
+  it('#1 an old request finishing must not clear the new request inFlight (or concurrency dedup breaks)', async () => {
     let calls = 0
     const releases: Array<() => void> = []
     const gated = (async () => {
@@ -257,11 +257,11 @@ describe('修复轮：审查发现', () => {
     const fresh = refresher.refresh()
     await tick(() => releases.length >= 2)
 
-    releases[0]?.() // 旧请求结束
+    releases[0]?.() // the old request finishes
     await stale
 
-    const extra = refresher.refresh() // 必须复用 fresh 的在途 Promise
-    // 若有 bug，这里会把 call 3 发出去；tick 会在无新请求时自然耗尽
+    const extra = refresher.refresh() // must reuse the fresh in-flight promise
+    // with the bug, call 3 gets dispatched here; tick naturally exhausts when nothing new is sent
     await tick(() => releases.length >= 3)
     expect(calls).toBe(2)
 
@@ -270,7 +270,7 @@ describe('修复轮：审查发现', () => {
     expect(calls).toBe(2)
   })
 
-  it('#2 Key 无效且有旧值时 describe() 明说 Key 无效，而不是报成网络抖动', async () => {
+  it('#2 with an invalid key and a cached value, describe() says so rather than reporting a network blip', async () => {
     let mode: 'ok' | 'unauth' = 'ok'
     const flaky = (async () =>
       mode === 'ok' ? jsonResponse(walletBody) : new Response('{}', { status: 401 })) as unknown as typeof fetch
@@ -281,18 +281,18 @@ describe('修复轮：审查发现', () => {
     await refresher.refresh({ force: true })
 
     const text = await refresher.describe()
-    expect(text).toContain('API Key 无效')
-    expect(text).not.toContain('上次成功于')
+    expect(text).toContain('API key is invalid')
+    expect(text).not.toContain('Last success')
   })
 
-  it('#2 网络失败且无旧值时 describe() 输出原始错误信息', async () => {
+  it('#2 with a network failure and no cached value, describe() reports the raw error', async () => {
     const boom = (async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:443') }) as unknown as typeof fetch
     const { refresher } = makeRefresher({ fetchImpl: boom })
     await refresher.refresh({ force: true })
     expect(await refresher.describe()).toContain('ECONNREFUSED')
   })
 
-  it('#3 第二层探测是并发的：所有候选的请求同时发出', async () => {
+  it('#3 the second-tier probe is concurrent: every candidate request is dispatched at once', async () => {
     let dispatchedCount = 0
     const releases: Array<() => void> = []
     const gated = (async () => {
@@ -311,7 +311,7 @@ describe('修复轮：审查发现', () => {
     })
 
     const pending = refresher.describe()
-    await tick(() => dispatchedCount === 3) // 串行实现下这里永远停在 1
+    await tick(() => dispatchedCount === 3) // a serial implementation would stall at 1 here
     expect(dispatchedCount).toBe(3)
 
     for (const release of releases) release()
