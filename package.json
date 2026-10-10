@@ -1,0 +1,30 @@
+{
+  "name": "pi-sub2api-usage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Show the current sub2api site's balance and today's actual spend in the Pi footer (read-only)",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  },
+  "license": "MIT"
+}
