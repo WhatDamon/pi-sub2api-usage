@@ -145,3 +145,127 @@ describe('工厂函数', () => {
     }
   })
 })
+
+describe('修复轮：审查发现', () => {
+  const jsonResponse = (body: unknown): Response =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+
+  const tick = async (predicate: () => boolean): Promise<void> => {
+    for (let i = 0; i < 500 && !predicate(); i += 1) await Promise.resolve()
+  }
+
+  it('#1 reset() 使在途请求失效：旧站点的慢响应不得覆盖新站点的 footer', async () => {
+    const statuses: Array<string | undefined> = []
+    let provider = 'slow-a'
+    let markDispatched: (() => void) | undefined
+    let releaseSlow: (() => void) | undefined
+    const dispatched = new Promise<void>((resolve) => { markDispatched = resolve })
+
+    const gated = (async () => {
+      const remaining = provider === 'slow-a' ? 111 : 222
+      markDispatched?.()
+      if (remaining === 111) await new Promise<void>((resolve) => { releaseSlow = resolve })
+      return jsonResponse({ ...walletBody, remaining })
+    }) as unknown as typeof fetch
+
+    const refresher = createRefresher({
+      resolveSite: async () => ({ ...site, provider }),
+      listSites: async () => [],
+      fetchImpl: gated,
+      setStatus: (text) => statuses.push(text),
+    })
+
+    const stale = refresher.refresh({ force: true })
+    await dispatched // 确保旧站点的请求已经发出
+    refresher.reset()
+    provider = 'fast-b'
+    await refresher.refresh({ force: true })
+    expect(statuses.at(-1)).toBe('sub2 $222.0000')
+
+    releaseSlow?.()
+    await stale
+    expect(statuses.at(-1)).toBe('sub2 $222.0000') // 旧响应不得覆盖
+  })
+
+  it('#1 旧请求结束时不得清掉新请求的 inFlight（否则并发去重失效）', async () => {
+    let calls = 0
+    const releases: Array<() => void> = []
+    const gated = (async () => {
+      calls += 1
+      await new Promise<void>((resolve) => releases.push(resolve))
+      return jsonResponse(walletBody)
+    }) as unknown as typeof fetch
+
+    const refresher = createRefresher({
+      resolveSite: async () => site,
+      listSites: async () => [],
+      fetchImpl: gated,
+      setStatus: () => {},
+    })
+
+    const stale = refresher.refresh()
+    await tick(() => releases.length >= 1)
+    refresher.reset()
+    const fresh = refresher.refresh()
+    await tick(() => releases.length >= 2)
+
+    releases[0]?.() // 旧请求结束
+    await stale
+
+    const extra = refresher.refresh() // 必须复用 fresh 的在途 Promise
+    // 若有 bug，这里会把 call 3 发出去；tick 会在无新请求时自然耗尽
+    await tick(() => releases.length >= 3)
+    expect(calls).toBe(2)
+
+    releases[1]?.()
+    await Promise.all([fresh, extra])
+    expect(calls).toBe(2)
+  })
+
+  it('#2 Key 无效且有旧值时 describe() 明说 Key 无效，而不是报成网络抖动', async () => {
+    let mode: 'ok' | 'unauth' = 'ok'
+    const flaky = (async () =>
+      mode === 'ok' ? jsonResponse(walletBody) : new Response('{}', { status: 401 })) as unknown as typeof fetch
+
+    const { refresher } = makeRefresher({ fetchImpl: flaky })
+    await refresher.refresh({ force: true })
+    mode = 'unauth'
+    await refresher.refresh({ force: true })
+
+    const text = await refresher.describe()
+    expect(text).toContain('API Key 无效')
+    expect(text).not.toContain('上次成功于')
+  })
+
+  it('#2 网络失败且无旧值时 describe() 输出原始错误信息', async () => {
+    const boom = (async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:443') }) as unknown as typeof fetch
+    const { refresher } = makeRefresher({ fetchImpl: boom })
+    await refresher.refresh({ force: true })
+    expect(await refresher.describe()).toContain('ECONNREFUSED')
+  })
+
+  it('#3 第二层探测是并发的：所有候选的请求同时发出', async () => {
+    let dispatchedCount = 0
+    const releases: Array<() => void> = []
+    const gated = (async () => {
+      dispatchedCount += 1
+      await new Promise<void>((resolve) => releases.push(resolve))
+      return jsonResponse({ error: 'nope' })
+    }) as unknown as typeof fetch
+
+    const candidates = ['a', 'b', 'c'].map((provider) => ({ ...site, provider }))
+    const refresher = createRefresher({
+      resolveSite: async () => undefined,
+      listSites: async () => candidates,
+      fetchImpl: gated,
+      setStatus: () => {},
+    })
+
+    const pending = refresher.describe()
+    await tick(() => dispatchedCount === 3) // 串行实现下这里永远停在 1
+    expect(dispatchedCount).toBe(3)
+
+    for (const release of releases) release()
+    await pending
+  })
+})

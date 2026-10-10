@@ -19,6 +19,13 @@ export interface Refresher {
   reset(): void
 }
 
+/** 上一次刷新的结局。`describe()` 的文案由它决定，而不是由「有没有旧值」决定。 */
+type RefreshOutcome =
+  | { kind: 'ok' }
+  | { kind: 'not-sub2api' }
+  | { kind: 'unauthorized'; message: string }
+  | { kind: 'network-error'; message: string }
+
 function minutesAgo(fetchedAt: number): number {
   return Math.max(0, Math.round((Date.now() - fetchedAt) / 60_000))
 }
@@ -33,8 +40,17 @@ function errorText(err: unknown): string {
  */
 export function createRefresher(deps: RefresherDeps): Refresher {
   let last: { site: SiteCredential; usage: NormalizedUsage } | undefined
-  let lastError: string | undefined
+  let outcome: RefreshOutcome | undefined
   let inFlight: Promise<void> | undefined
+
+  /**
+   * 代数计数器。`reset()` 自增它，从而让**在途**的刷新过期。
+   *
+   * 没有它会出现两种真实故障：切换模型后旧站点的慢响应返回，把错误的余额写进
+   * 新模型的 footer；以及旧请求结束时无条件清掉 `inFlight`，把新请求的并发去重
+   * 一起清掉（规格 §9 要求同一时刻只允许一次在途请求）。
+   */
+  let generation = 0
 
   const status = (text: string | undefined): void => {
     try {
@@ -45,14 +61,17 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   }
 
   const applyFailure = (message: string): void => {
-    lastError = message
+    outcome = { kind: 'network-error', message }
     status(formatFooter({ kind: 'error', usage: last?.usage ?? null }))
   }
 
-  async function run(timeoutMs?: number): Promise<void> {
+  async function run(gen: number, timeoutMs?: number): Promise<void> {
     const site = await deps.resolveSite()
+    if (gen !== generation) return
+
     if (!site) {
       last = undefined
+      outcome = { kind: 'not-sub2api' }
       status('')
       return
     }
@@ -61,18 +80,20 @@ export function createRefresher(deps: RefresherDeps): Refresher {
       fetchImpl: deps.fetchImpl,
       timeoutMs: timeoutMs ?? deps.timeoutMs,
     })
+    // 关键关卡：过期请求不得再改动任何状态，包括 footer。
+    if (gen !== generation) return
 
     switch (result.kind) {
       case 'ok':
         try {
           const usage = normalize(result.body)
           last = { site, usage }
-          lastError = undefined
+          outcome = { kind: 'ok' }
           status(formatFooter({ kind: 'ok', usage, stale: false }))
         } catch {
           // 判定失败即视为「这不是 sub2api」，静默清空而不是打扰用户。
           last = undefined
-          lastError = undefined
+          outcome = { kind: 'not-sub2api' }
           status('')
         }
         return
@@ -80,12 +101,12 @@ export function createRefresher(deps: RefresherDeps): Refresher {
       case 'not-sub2api':
         // 站点已不是 sub2api，旧值不再可信，必须丢弃。
         last = undefined
-        lastError = undefined
+        outcome = { kind: 'not-sub2api' }
         status('')
         return
 
       case 'unauthorized':
-        lastError = result.message
+        outcome = { kind: 'unauthorized', message: result.message }
         status('sub2 !')
         return
 
@@ -95,45 +116,67 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     }
   }
 
-  async function describe(): Promise<string> {
-    try {
-      if (last) {
-        const lines: string[] = []
-        if (lastError !== undefined) {
-          lines.push(`上次成功于 ${minutesAgo(last.usage.fetchedAt)} 分钟前`)
-        }
-        lines.push(formatDetail(last.usage, last.site))
-        return lines.join('\n')
-      }
+  function describeHeader(): string | undefined {
+    if (outcome?.kind === 'unauthorized') return 'API Key 无效或已过期。'
+    if (outcome?.kind === 'network-error' && last) {
+      return `上次成功于 ${minutesAgo(last.usage.fetchedAt)} 分钟前`
+    }
+    return undefined
+  }
 
-      const candidates = await deps.listSites()
-      const lines: string[] = ['当前模型不是 sub2api 站点。']
-      let hits = 0
+  async function describeCandidates(): Promise<string> {
+    const candidates = await deps.listSites()
 
-      for (const candidate of candidates) {
-        const result = await fetchUsage(candidate, {
+    // 并发探测：串行会让不可达的候选把 `/sub2-usage` 拖到 N×超时（规格 §8 要求并发）。
+    const probed = await Promise.all(
+      candidates.map(async (candidate) => ({
+        candidate,
+        result: await fetchUsage(candidate, {
           fetchImpl: deps.fetchImpl,
           timeoutMs: deps.timeoutMs,
-        })
+        }),
+      })),
+    )
 
-        if (result.kind === 'ok') {
-          try {
-            const usage = normalize(result.body)
-            hits += 1
-            const balance = formatAmount(usage.primary.value, usage.unit)
-            lines.push(`${candidate.provider} ${candidate.usageUrl} → ${balance}`)
-            continue
-          } catch {
-            /* normalize 失败按未命中处理 */
-          }
+    const lines: string[] = ['当前模型不是 sub2api 站点。']
+    let hits = 0
+
+    for (const { candidate, result } of probed) {
+      if (result.kind === 'ok') {
+        try {
+          const usage = normalize(result.body)
+          hits += 1
+          const balance = formatAmount(usage.primary.value, usage.unit)
+          lines.push(`${candidate.provider} ${candidate.usageUrl} → ${balance}`)
+          continue
+        } catch {
+          /* normalize 失败按未命中处理 */
         }
-
-        const label =
-          result.kind === 'unauthorized' ? 'Key 无效' : result.kind === 'not-sub2api' ? '未命中' : '网络失败'
-        lines.push(`${candidate.provider} ${candidate.usageUrl} → ${label}`)
       }
 
-      if (hits === 0) lines.push('未在 Pi 配置中发现可用的 sub2api 站点。')
+      const label =
+        result.kind === 'unauthorized' ? 'Key 无效' : result.kind === 'not-sub2api' ? '未命中' : '网络失败'
+      lines.push(`${candidate.provider} ${candidate.usageUrl} → ${label}`)
+    }
+
+    if (hits === 0) lines.push('未在 Pi 配置中发现可用的 sub2api 站点。')
+    return lines.join('\n')
+  }
+
+  async function describe(): Promise<string> {
+    try {
+      if (!last) {
+        // 网络失败且无旧值时，规格 §10 要求把原始错误说出来，而不是去猜候选站点。
+        if (outcome?.kind === 'network-error') {
+          return `sub2api 用量查询失败：${outcome.message}`
+        }
+        return await describeCandidates()
+      }
+
+      const lines: string[] = []
+      const header = describeHeader()
+      if (header !== undefined) lines.push(header)
+      lines.push(formatDetail(last.usage, last.site))
       return lines.join('\n')
     } catch (err) {
       return `sub2api 用量查询失败：${errorText(err)}`
@@ -143,24 +186,27 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   function refresh(options: { force?: boolean; timeoutMs?: number } = {}): Promise<void> {
     if (inFlight) return inFlight
 
+    const gen = generation
     const started = (async () => {
       try {
-        await run(options.timeoutMs)
+        await run(gen, options.timeoutMs)
       } catch (err) {
-        applyFailure(errorText(err))
+        if (gen === generation) applyFailure(errorText(err))
       }
     })()
 
     const tracked = started.finally(() => {
-      inFlight = undefined
+      // 身份比较：只有自己仍是在途请求时才清除，否则会误清后来者的去重状态。
+      if (inFlight === tracked) inFlight = undefined
     })
     inFlight = tracked
     return tracked
   }
 
   function reset(): void {
+    generation += 1
     last = undefined
-    lastError = undefined
+    outcome = undefined
     inFlight = undefined
   }
 
