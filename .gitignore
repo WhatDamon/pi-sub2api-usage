@@ -1,0 +1,9 @@
+# Dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Logs and local debugging artefacts
+*.log
+.DS_Store
+/test/fixtures/local/
