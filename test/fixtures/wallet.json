@@ -1,0 +1,24 @@
+{
+  "mode": "unrestricted",
+  "isValid": true,
+  "planName": "钱包余额",
+  "unit": "USD",
+  "remaining": 1.88485977,
+  "balance": 1.88485977,
+  "usage": {
+    "today": { "requests": 137, "total_tokens": 19304722, "cost": 0.524918538, "actual_cost": 0.1312296345 },
+    "total": { "requests": 1326, "total_tokens": 127093315, "cost": 3.660560046, "actual_cost": 0.9151400115 },
+    "rpm": 4,
+    "tpm": 0,
+    "average_duration_ms": 12569.65
+  },
+  "daily_usage": [
+    { "date": "2026-10-09", "requests": 690, "total_tokens": 96000000, "cost": 0.0498718, "actual_cost": 0.0199 },
+    { "date": "2026-10-10", "requests": 499, "total_tokens": 12000000, "cost": 1.241682, "actual_cost": 0.3104 },
+    { "date": "2026-10-11", "requests": 137, "total_tokens": 19304722, "cost": 0.524918538, "actual_cost": 0.1312 }
+  ],
+  "model_stats": [
+    { "model": "m-1", "requests": 1324, "total_tokens": 127093315, "cost": 3.647284872, "actual_cost": 0.911821218 },
+    { "model": "m-2", "requests": 2, "total_tokens": 1000, "cost": 0.013275174, "actual_cost": 0.003318793 }
+  ]
+}

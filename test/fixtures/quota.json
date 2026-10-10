@@ -1,0 +1,11 @@
+{
+  "mode": "quota_limited",
+  "isValid": true,
+  "planName": "配额套餐",
+  "unit": "USD",
+  "remaining": 12.5,
+  "quota": { "limit": 20.0, "used": 7.5, "remaining": 12.5 },
+  "expires_at": "2027-01-01T00:00:00Z",
+  "days_until_expiry": 82,
+  "usage": { "today": { "requests": 3, "total_tokens": 300, "cost": 0.2, "actual_cost": 0.2 } }
+}

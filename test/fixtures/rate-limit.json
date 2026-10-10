@@ -1,0 +1,11 @@
+{
+  "mode": "quota_limited",
+  "isValid": true,
+  "planName": "速率限制",
+  "unit": "USD",
+  "remaining": 0,
+  "rate_limits": [
+    { "window": "5h", "limit": 100, "used": 82, "remaining": 18, "window_start": "2026-10-11T00:00:00Z", "reset_at": "2026-10-11T05:00:00Z" },
+    { "window": "1d", "limit": 400, "used": 300, "remaining": 100, "window_start": "2026-10-11T00:00:00Z", "reset_at": "2026-10-12T00:00:00Z" }
+  ]
+}

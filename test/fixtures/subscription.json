@@ -1,0 +1,13 @@
+{
+  "mode": "unrestricted",
+  "isValid": true,
+  "planName": "团队订阅",
+  "unit": "USD",
+  "remaining": 4.0,
+  "subscription": {
+    "daily_usage_usd": 1.0, "daily_limit_usd": 5.0,
+    "weekly_usage_usd": 6.0, "weekly_limit_usd": 20.0,
+    "monthly_usage_usd": 9.0, "monthly_limit_usd": 50.0
+  },
+  "usage": { "today": { "requests": 10, "total_tokens": 100, "cost": 1.0, "actual_cost": 1.0 } }
+}
