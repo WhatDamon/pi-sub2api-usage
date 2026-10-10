@@ -3,6 +3,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Test runner cache
+.vitest/
+
 # Logs and local debugging artefacts
 *.log
 .DS_Store
