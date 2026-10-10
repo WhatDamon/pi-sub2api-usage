@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { fetchUsage } from './client.ts'
 import { listCandidateSites, resolveCurrentSite, type CredentialSource, type SiteCredential } from './config.ts'
-import { formatAmount, formatDetail, formatFooter } from './format.ts'
+import { formatAmount, formatDetail, formatFooter, type Palette } from './format.ts'
 import { normalize, type NormalizedUsage } from './normalize.ts'
 import { notify, setFooter } from './ui.ts'
 
@@ -9,8 +9,12 @@ export interface RefresherDeps {
   resolveSite: (ctx?: ExtensionContext) => Promise<SiteCredential | undefined>
   listSites: (ctx?: ExtensionContext) => Promise<SiteCredential[]>
   fetchImpl?: typeof fetch
-  setStatus: (text: string | undefined) => void
+  /** footer 配色。必填，强制接线方显式决定（TUI 用实时主题，其他路径用 PLAIN_PALETTE）。 */
+  palette: Palette
+  setStatus: (text: string | undefined, link?: string) => void
   timeoutMs?: number
+  /** 供测试注入固定时钟，用于重置倒计时与相对时间；默认 Date.now。 */
+  now?: () => number
 }
 
 export interface Refresher {
@@ -26,8 +30,8 @@ type RefreshOutcome =
   | { kind: 'unauthorized'; message: string }
   | { kind: 'network-error'; message: string }
 
-function minutesAgo(fetchedAt: number): number {
-  return Math.max(0, Math.round((Date.now() - fetchedAt) / 60_000))
+function minutesAgo(fetchedAt: number, now: number): number {
+  return Math.max(0, Math.round((now - fetchedAt) / 60_000))
 }
 
 function errorText(err: unknown): string {
@@ -52,17 +56,21 @@ export function createRefresher(deps: RefresherDeps): Refresher {
    */
   let generation = 0
 
-  const status = (text: string | undefined): void => {
+  const now = (): number => deps.now?.() ?? Date.now()
+
+  const status = (text: string | undefined, link?: string): void => {
     try {
-      deps.setStatus(text)
+      deps.setStatus(text, link)
     } catch {
       /* UI 失败不应影响刷新流程 */
     }
   }
 
-  const applyFailure = (message: string): void => {
+  const applyFailure = (message: string, link?: string): void => {
     outcome = { kind: 'network-error', message }
-    status(formatFooter({ kind: 'error', usage: last?.usage ?? null }))
+    // 有旧值时 footer 仍指向已知站点；没有则不给链接。
+    const footer = formatFooter({ kind: 'error', usage: last?.usage ?? null }, deps.palette, now())
+    status(footer, link ?? last?.site.baseUrl)
   }
 
   async function run(gen: number, timeoutMs?: number): Promise<void> {
@@ -89,7 +97,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
           const usage = normalize(result.body)
           last = { site, usage }
           outcome = { kind: 'ok' }
-          status(formatFooter({ kind: 'ok', usage, stale: false }))
+          status(formatFooter({ kind: 'ok', usage, stale: false }, deps.palette, now()), site.baseUrl)
         } catch {
           // 判定失败即视为「这不是 sub2api」，静默清空而不是打扰用户。
           last = undefined
@@ -107,11 +115,11 @@ export function createRefresher(deps: RefresherDeps): Refresher {
 
       case 'unauthorized':
         outcome = { kind: 'unauthorized', message: result.message }
-        status('sub2 !')
+        status(formatFooter({ kind: 'unauthorized' }, deps.palette, now()), site.baseUrl)
         return
 
       case 'network-error':
-        applyFailure(result.message)
+        applyFailure(result.message, site.baseUrl)
         return
     }
   }
@@ -119,7 +127,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   function describeHeader(): string | undefined {
     if (outcome?.kind === 'unauthorized') return 'API Key 无效或已过期。'
     if (outcome?.kind === 'network-error' && last) {
-      return `上次成功于 ${minutesAgo(last.usage.fetchedAt)} 分钟前`
+      return `上次成功于 ${minutesAgo(last.usage.fetchedAt, now())} 分钟前`
     }
     return undefined
   }
@@ -222,11 +230,17 @@ export default function createExtension(pi: ExtensionAPI): void {
     modelRegistry: ctx.modelRegistry,
   })
 
+  // 主题必须实时读取：ctx.ui.theme 会随用户切换主题变化，不能在工厂期固化。
+  const palette: Palette = {
+    fg: (color, text) => (currentCtx?.mode === 'tui' ? currentCtx.ui.theme.fg(color, text) : text),
+  }
+
   const refresher = createRefresher({
     resolveSite: async () => (currentCtx ? resolveCurrentSite(sourceOf(currentCtx)) : undefined),
     listSites: async () => (currentCtx ? listCandidateSites(sourceOf(currentCtx)) : []),
-    setStatus: (text) => {
-      if (currentCtx) setFooter(currentCtx, text)
+    palette,
+    setStatus: (text, link) => {
+      if (currentCtx) setFooter(currentCtx, text, link)
     },
   })
 

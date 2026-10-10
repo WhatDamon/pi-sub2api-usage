@@ -137,3 +137,65 @@ describe('畸形输入', () => {
     expect(() => normalize('nope', NOW)).toThrow(UnrecognizedUsageError)
   })
 })
+
+describe('lanes', () => {
+  it('钱包形态没有窗口', () => {
+    expect(normalize(fixture('wallet'), NOW).lanes).toEqual([])
+  })
+
+  it('配额形态给出一个不带标签的已用百分比，且没有窗口重置时间', () => {
+    const lanes = normalize(fixture('quota'), NOW).lanes
+    expect(lanes).toHaveLength(1)
+    expect(lanes[0]?.label).toBe('')
+    expect(lanes[0]?.percent).toBeCloseTo(37.5, 6) // 7.5 / 20
+    expect(lanes[0]?.resetAt).toBeNull() // quota{} 只有 expires_at，没有窗口重置语义
+    expect(lanes[0]?.unlimited).toBe(false)
+  })
+
+  it('订阅形态用 1d/7d/1m 标签', () => {
+    const lanes = normalize(fixture('subscription'), NOW).lanes
+    expect(lanes.map((lane) => lane.label)).toEqual(['1d', '7d', '1m'])
+    expect(lanes.map((lane) => Math.round(lane.percent ?? -1))).toEqual([20, 30, 18])
+    expect(lanes.every((lane) => lane.unlimited === false && lane.resetAt === null)).toBe(true)
+  })
+
+  it('订阅窗口 limit 为 -1 时标记为无限且 percent 为 null', () => {
+    const body = {
+      mode: 'unrestricted',
+      subscription: { daily_limit_usd: -1, monthly_usage_usd: 9, monthly_limit_usd: 50 },
+    }
+    const lane = normalize(body, NOW).lanes[0]
+    expect(lane?.label).toBe('1d')
+    expect(lane?.percent).toBeNull()
+    expect(lane?.unlimited).toBe(true)
+  })
+
+  it('速率限制形态每个窗口一条，reset_at 解析为毫秒时间戳', () => {
+    const lanes = normalize(fixture('rate-limit'), NOW).lanes
+    expect(lanes.map((lane) => lane.label)).toEqual(['5h', '1d'])
+    expect(lanes.map((lane) => Math.round(lane.percent ?? -1))).toEqual([82, 75])
+    expect(lanes[0]?.resetAt).toBe(Date.parse('2026-10-11T05:00:00Z'))
+    expect(lanes[1]?.resetAt).toBe(Date.parse('2026-10-12T00:00:00Z'))
+  })
+
+  it('无法解析的 reset_at 变成 null 而不是 NaN', () => {
+    const body = {
+      mode: 'quota_limited',
+      rate_limits: [{ window: '5h', limit: 100, used: 82, remaining: 18, reset_at: '不是时间' }],
+    }
+    expect(normalize(body, NOW).lanes[0]?.resetAt).toBeNull()
+  })
+
+  it('percent 保留原始精度，取整是渲染层的事', () => {
+    const body = { mode: 'unrestricted', subscription: { daily_usage_usd: 1, daily_limit_usd: 3 } }
+    expect(normalize(body, NOW).lanes[0]?.percent).toBeCloseTo(33.3333, 3)
+  })
+
+  it('quota 与 rate_limits 并存时 lanes 只反映主形态，窗口仍留给明细', () => {
+    const both = { ...(fixture('quota') as object), rate_limits: (fixture('rate-limit') as any).rate_limits }
+    const u = normalize(both, NOW)
+    expect(u.mode).toBe('quota')
+    expect(u.lanes).toHaveLength(1)
+    expect(u.rateLimits).toHaveLength(2)
+  })
+})

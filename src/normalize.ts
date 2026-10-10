@@ -29,6 +29,17 @@ export interface RateLimitWindow {
   resetAt: string | null
 }
 
+/**
+ * 一个可显示的上限窗口（配额 / 订阅周期 / 速率窗口），供 footer 一行渲染。
+ * `percent` 是**原始**已用百分比，取整与阀值着色留给渲染层。
+ */
+export interface UsageLane {
+  label: string
+  percent: number | null
+  resetAt: number | null
+  unlimited: boolean
+}
+
 export interface NormalizedUsage {
   mode: UsageMode
   planName: string
@@ -40,6 +51,7 @@ export interface NormalizedUsage {
   daily: DailyBucket[]
   byModel: ModelBucket[]
   rateLimits: RateLimitWindow[]
+  lanes: UsageLane[]
   isValid: boolean
   fetchedAt: number
 }
@@ -54,9 +66,9 @@ export class UnrecognizedUsageError extends Error {
 const SUB2API_WIRE_MODES = ['quota_limited', 'unrestricted'] as const
 
 const SUBSCRIPTION_WINDOWS = [
-  { key: 'daily', label: '日' },
-  { key: 'weekly', label: '周' },
-  { key: 'monthly', label: '月' },
+  { key: 'daily', detail: '日', lane: '1d' },
+  { key: 'weekly', detail: '周', lane: '7d' },
+  { key: 'monthly', detail: '月', lane: '1m' },
 ] as const
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -156,34 +168,50 @@ function parseRateLimits(value: unknown): RateLimitWindow[] {
   return out
 }
 
+/** `reset_at` 是 ISO 字符串；解析失败返回 null，绝不让 NaN 流进渲染层。 */
+function parseResetAt(value: string | null): number | null {
+  if (value === null) return null
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 /**
- * 订阅形态的主数值：三个窗口中剩余的最小值。
+ * 订阅形态：一次遍历同时产出三个东西——主数值（三窗口剩余的最小值）、
+ * 中文明细（给 `/sub2-usage`）与英文窗口（给 footer）。
+ *
+ * 两者标签不同（`日` vs `1d`），所以不能从 lanes 反推明细；同一次遍历产出
+ * 可以避免百分比算两遍，同时保证现有明细字符串逐字不变。
+ *
  * `limit` 为负数表示该窗口不限额（后端用 -1 作为哨兵值），不参与最小值计算。
  */
-function subscriptionPrimary(subscription: Record<string, unknown>): {
+function subscriptionParts(subscription: Record<string, unknown>): {
   value: number | null
   detail: string
+  lanes: UsageLane[]
 } {
   const parts: string[] = []
+  const lanes: UsageLane[] = []
   let min: number | null = null
 
-  for (const { key, label } of SUBSCRIPTION_WINDOWS) {
+  for (const { key, detail, lane } of SUBSCRIPTION_WINDOWS) {
     const limit = num(subscription[`${key}_limit_usd`])
     const used = num(subscription[`${key}_usage_usd`]) ?? 0
 
     if (limit === null || limit < 0) {
-      parts.push(`${label} 无限`)
+      parts.push(`${detail} 无限`)
+      lanes.push({ label: lane, percent: null, resetAt: null, unlimited: true })
       continue
     }
 
-    const remaining = limit - used
-    const percent = limit > 0 ? Math.round((used / limit) * 100) : 0
-    parts.push(`${label} ${percent}%`)
+    const percent = limit > 0 ? (used / limit) * 100 : 0
+    parts.push(`${detail} ${Math.round(percent)}%`)
+    lanes.push({ label: lane, percent, resetAt: null, unlimited: false })
 
+    const remaining = limit - used
     if (min === null || remaining < min) min = remaining
   }
 
-  return { value: min, detail: parts.join(' · ') }
+  return { value: min, detail: parts.join(' · '), lanes }
 }
 
 /**
@@ -209,14 +237,25 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
 
   let mode: UsageMode
   let primary: NormalizedUsage['primary']
+  let lanes: UsageLane[]
 
   if (quotaLimit !== null && quotaLimit > 0) {
     mode = 'quota'
+    const quotaUsed = quota ? num(quota.used) : null
     primary = {
       label: '配额剩余',
       value: quota ? num(quota.remaining) : null,
-      detail: `已用 ${show(quota ? num(quota.used) : null)} / ${show(quotaLimit)}`,
+      detail: `已用 ${show(quotaUsed)} / ${show(quotaLimit)}`,
     }
+    // 配额本身没有重置时间戳（只有 expires_at），因此不带倒计时。
+    lanes = [
+      {
+        label: '',
+        percent: quotaUsed === null ? null : (quotaUsed / quotaLimit) * 100,
+        resetAt: null,
+        unlimited: false,
+      },
+    ]
   } else if (rateLimits.length > 0) {
     mode = 'rate_limit'
     const peak = rateLimits.reduce((best, current) => (current.usedRatio > best.usedRatio ? current : best))
@@ -225,10 +264,17 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
       value: peak.remaining,
       detail: rateLimits.map((w) => `${w.window} ${Math.round(w.usedRatio * 100)}%`).join(' · '),
     }
+    lanes = rateLimits.map((window) => ({
+      label: window.window,
+      percent: window.usedRatio * 100,
+      resetAt: parseResetAt(window.resetAt),
+      unlimited: false,
+    }))
   } else if (subscription && Object.keys(subscription).length > 0) {
     mode = 'subscription'
-    const summary = subscriptionPrimary(subscription)
+    const summary = subscriptionParts(subscription)
     primary = { label: '订阅剩余', value: summary.value, detail: summary.detail }
+    lanes = summary.lanes
   } else {
     mode = 'wallet'
     primary = {
@@ -236,6 +282,7 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
       value: num(record.remaining) ?? num(record.balance),
       detail: undefined,
     }
+    lanes = []
   }
 
   const usage = asRecord(record.usage)
@@ -251,6 +298,7 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
     daily: parseDaily(record.daily_usage),
     byModel: parseByModel(record.model_stats),
     rateLimits,
+    lanes,
     isValid: record.isValid !== false,
     fetchedAt: now ?? Date.now(),
   }

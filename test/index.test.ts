@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import createExtension, { createRefresher } from '../src/index.ts'
+import { PLAIN_PALETTE, type Palette } from '../src/format.ts'
 import type { SiteCredential } from '../src/config.ts'
+
+const NOW = 1_760_000_000_000
 
 const site: SiteCredential = {
   provider: 'site-a',
@@ -20,21 +23,56 @@ const okFetch = (async () =>
 
 const makeRefresher = (overrides: Partial<Parameters<typeof createRefresher>[0]> = {}) => {
   const statuses: Array<string | undefined> = []
+  const links: Array<string | undefined> = []
   const refresher = createRefresher({
     resolveSite: async () => site,
     listSites: async () => [site],
     fetchImpl: okFetch,
-    setStatus: (text) => statuses.push(text),
+    palette: PLAIN_PALETTE,
+    setStatus: (text, link) => {
+      statuses.push(text)
+      links.push(link)
+    },
     ...overrides,
   })
-  return { refresher, statuses }
+  return { refresher, statuses, links }
 }
 
 describe('createRefresher', () => {
   it('成功后把余额写进 footer', async () => {
     const { refresher, statuses } = makeRefresher()
     await refresher.refresh({ force: true })
-    expect(statuses.at(-1)).toBe('sub2 $1.8849')
+    expect(statuses.at(-1)).toBe('Sub2 $1.88')
+  })
+
+  it('footer 文本附带站点根地址作为可点击链接', async () => {
+    const { refresher, links } = makeRefresher()
+    await refresher.refresh({ force: true })
+    expect(links.at(-1)).toBe('https://gw.example.com')
+  })
+
+  it('颜色来自注入的调色板，刷新器不自作主张', async () => {
+    const tagged: Palette = { fg: (color, text) => `<${color}>${text}</${color}>` }
+    const { refresher, statuses } = makeRefresher({ palette: tagged })
+    await refresher.refresh({ force: true })
+    // 1.8848… < $2 → warning；walletBody 没有 today 段
+    expect(statuses.at(-1)).toBe('<dim>Sub2</dim> <warning>$1.88</warning>')
+  })
+
+  it('非钱包形态显示窗口百分比与重置倒计时', async () => {
+    const rateBody = {
+      mode: 'quota_limited',
+      isValid: true,
+      unit: 'USD',
+      rate_limits: [
+        { window: '5h', limit: 100, used: 82, remaining: 18, reset_at: new Date(NOW + 42 * 60_000).toISOString() },
+      ],
+    }
+    const rateFetch = (async () =>
+      new Response(JSON.stringify(rateBody), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
+    const { refresher, statuses } = makeRefresher({ fetchImpl: rateFetch, now: () => NOW })
+    await refresher.refresh({ force: true })
+    expect(statuses.at(-1)).toBe('Sub2 5h 82% [⟳ 42m]')
   })
 
   it('fetch 永远 reject 时 resolve 而不抛出（未捕获 rejection 会杀死会话）', async () => {
@@ -57,11 +95,19 @@ describe('createRefresher', () => {
     expect(statuses.at(-1)).toBe('')
   })
 
+  it('未检测到站点时清空 footer 且不带链接', async () => {
+    const notSub2 = (async () =>
+      new Response(JSON.stringify({ error: 'nope' }), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
+    const { refresher, links } = makeRefresher({ fetchImpl: notSub2 })
+    await refresher.refresh({ force: true })
+    expect(links.at(-1)).toBeUndefined()
+  })
+
   it('Key 无效时把 footer 置为告警态', async () => {
     const unauth = (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch
     const { refresher, statuses } = makeRefresher({ fetchImpl: unauth })
     await refresher.refresh({ force: true })
-    expect(statuses.at(-1)).toBe('sub2 !')
+    expect(statuses.at(-1)).toBe('Sub2 !')
   })
 
   it('刷新失败时保留上一次的成功值并加上陈旧标记', async () => {
@@ -74,7 +120,7 @@ describe('createRefresher', () => {
     await refresher.refresh({ force: true })
     mode = 'fail'
     await refresher.refresh({ force: true })
-    expect(statuses.at(-1)).toBe('sub2 ~$1.8849')
+    expect(statuses.at(-1)).toBe('Sub2 ~$1.88')
   })
 
   it('同一时刻只发一次请求，并发调用复用在途 Promise', async () => {
@@ -172,6 +218,7 @@ describe('修复轮：审查发现', () => {
       resolveSite: async () => ({ ...site, provider }),
       listSites: async () => [],
       fetchImpl: gated,
+      palette: PLAIN_PALETTE,
       setStatus: (text) => statuses.push(text),
     })
 
@@ -180,11 +227,11 @@ describe('修复轮：审查发现', () => {
     refresher.reset()
     provider = 'fast-b'
     await refresher.refresh({ force: true })
-    expect(statuses.at(-1)).toBe('sub2 $222.0000')
+    expect(statuses.at(-1)).toBe('Sub2 $222.00')
 
     releaseSlow?.()
     await stale
-    expect(statuses.at(-1)).toBe('sub2 $222.0000') // 旧响应不得覆盖
+    expect(statuses.at(-1)).toBe('Sub2 $222.00') // 旧响应不得覆盖
   })
 
   it('#1 旧请求结束时不得清掉新请求的 inFlight（否则并发去重失效）', async () => {
@@ -200,6 +247,7 @@ describe('修复轮：审查发现', () => {
       resolveSite: async () => site,
       listSites: async () => [],
       fetchImpl: gated,
+      palette: PLAIN_PALETTE,
       setStatus: () => {},
     })
 
@@ -258,6 +306,7 @@ describe('修复轮：审查发现', () => {
       resolveSite: async () => undefined,
       listSites: async () => candidates,
       fetchImpl: gated,
+      palette: PLAIN_PALETTE,
       setStatus: () => {},
     })
 
