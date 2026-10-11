@@ -289,7 +289,10 @@ export function formatFooter(state: FooterState, palette: Palette, now: number):
   if (segments.length === 0) return palette.fg('error', `${FOOTER_PREFIX} ?`)
 
   const label = palette.fg('dim', FOOTER_PREFIX)
-  return truncateToWidth(`${label} ${stale ? '~' : ''}${segments.join(' · ')}`, FOOTER_MAX_WIDTH)
+  // The joiner is painted dim as well. Left bare it would render in the terminal's
+  // default foreground, leaving a bright dot sitting between two dim segments.
+  const separator = palette.fg('dim', ' · ')
+  return truncateToWidth(`${label} ${stale ? '~' : ''}${segments.join(separator)}`, FOOTER_MAX_WIDTH)
 }
 
 export function formatDetail(usage: NormalizedUsage, site: SiteCredential): string {

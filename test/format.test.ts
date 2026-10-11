@@ -326,6 +326,25 @@ describe('formatFooter colouring', () => {
     expect(out).toContain(painted('dim', 'Today $0.1312'))
   })
 
+  it('paints the separator between segments dim too, so it does not stand out as default-coloured text', () => {
+    const separator = painted('dim', ' · ')
+    const count = (text: string): number => text.split(separator).length - 1
+
+    // Wallet mode has two segments (balance + Today), so exactly one separator.
+    expect(count(formatFooter({ kind: 'ok', usage, stale: false }, tagged, NOW))).toBe(1)
+
+    // Subscription mode has three lanes, so two separators.
+    const subscription = render({
+      mode: 'subscription',
+      lanes: [
+        { label: '1d', percent: 20, resetAt: null, unlimited: false },
+        { label: '7d', percent: 30, resetAt: null, unlimited: false },
+        { label: '1m', percent: 18, resetAt: null, unlimited: false },
+      ],
+    })
+    expect(count(subscription)).toBe(2)
+  })
+
   it('window labels dim, percentages in the severity colour, countdown dim', () => {
     const out = render({
       mode: 'rate_limit',
