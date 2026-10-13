@@ -11,8 +11,8 @@ export interface FetchUsageOptions {
   timeoutMs?: number
 }
 
-export const USER_AGENT = 'pi/1.0.0'
-export const DEFAULT_TIMEOUT_MS = 5000
+const USER_AGENT = 'pi/1.0.0'
+const DEFAULT_TIMEOUT_MS = 5000
 
 /**
  * How much slack the backstop deadline leaves beyond `timeoutMs`.
@@ -22,6 +22,19 @@ export const DEFAULT_TIMEOUT_MS = 5000
  * connection down.
  */
 const TIMEOUT_GRACE_MS = 250
+
+/**
+ * Marker for "the backstop deadline fired", as opposed to a transport or parse error.
+ *
+ * The distinction matters while reading the body: a deadline means the request is
+ * broken, whereas a body that simply will not parse means the endpoint is not sub2api.
+ */
+class DeadlineError extends Error {
+  constructor(timeoutMs: number) {
+    super(`usage request did not settle within ${timeoutMs + TIMEOUT_GRACE_MS}ms`)
+    this.name = 'DeadlineError'
+  }
+}
 
 /**
  * Guarantees `work` settles within a bounded time.
@@ -36,10 +49,7 @@ const TIMEOUT_GRACE_MS = 250
 async function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const backstop = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`usage request did not settle within ${timeoutMs + TIMEOUT_GRACE_MS}ms`)),
-      timeoutMs + TIMEOUT_GRACE_MS,
-    )
+    timer = setTimeout(() => reject(new DeadlineError(timeoutMs)), timeoutMs + TIMEOUT_GRACE_MS)
   })
 
   try {
@@ -62,7 +72,7 @@ export function scrub(text: string, site: SiteCredential): string {
  * no reliance on the status code, because a non-sub2api gateway happily returns 200
  * with valid JSON. "Has a mode field" is what separates the two.
  */
-export function isSub2ApiBody(body: unknown): boolean {
+function isSub2ApiBody(body: unknown): boolean {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return false
   const mode = (body as Record<string, unknown>).mode
   return mode === 'quota_limited' || mode === 'unrestricted'
@@ -107,8 +117,18 @@ export async function fetchUsage(
 
   let body: unknown
   try {
-    body = await res.json()
-  } catch {
+    // The deadline has to cover the body read as well. The call above only bounds the
+    // promise that settles on the response headers, so a server that sends headers and
+    // then stalls the body would park the refresh in flight forever — and a refresh that
+    // never settles is never cleared, which freezes every later refresh too.
+    body = await withDeadline(res.json(), timeoutMs)
+  } catch (err) {
+    // A body that will not parse means the endpoint is not sub2api; a body-read deadline
+    // means the request itself is broken. Ordered this way so a hung body is never
+    // mistaken for a "not sub2api" answer and silently hidden.
+    if (err instanceof DeadlineError) {
+      return { kind: 'network-error', message: scrub(err.message, site) }
+    }
     return { kind: 'not-sub2api' }
   }
 

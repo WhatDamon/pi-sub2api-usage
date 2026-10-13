@@ -11,15 +11,15 @@ describe('mode detection', () => {
   it('detects wallet with a shared balance when subscription/quota/rate_limits are all absent', () => {
     const u = normalize(fixture('wallet'), NOW)
     expect(u.mode).toBe('wallet')
-    expect(u.sharedBalance).toBe(true)
     expect(u.primary.value).toBe(1.88485977)
     expect(u.primary.label).toContain('Wallet balance')
+    expect(u.primary.format).toBe('amount')
   })
 
-  it('detects subscription and marks the balance as not shared', () => {
+  it('detects subscription', () => {
     const u = normalize(fixture('subscription'), NOW)
     expect(u.mode).toBe('subscription')
-    expect(u.sharedBalance).toBe(false)
+    expect(u.primary.format).toBe('amount')
   })
 
   it('detects quota when quota.limit is greater than 0', () => {
@@ -32,11 +32,9 @@ describe('mode detection', () => {
     expect(normalize(fixture('rate-limit'), NOW).mode).toBe('rate_limit')
   })
 
-  it('prefers quota when quota and rate_limits coexist, but still keeps the windows', () => {
+  it('prefers quota when quota and rate_limits coexist', () => {
     const both = { ...(fixture('quota') as object), rate_limits: (fixture('rate-limit') as any).rate_limits }
-    const u = normalize(both, NOW)
-    expect(u.mode).toBe('quota')
-    expect(u.rateLimits).toHaveLength(2)
+    expect(normalize(both, NOW).mode).toBe('quota')
   })
 })
 
@@ -71,6 +69,8 @@ describe('rate limit mode', () => {
     const u = normalize(fixture('rate-limit'), NOW)
     expect(u.primary.value).toBe(18) // 5h at 82% > 1d at 75%
     expect(u.primary.label).toContain('5h')
+    // `remaining` counts requests, not money: the ratio 82/100 only makes sense as a count.
+    expect(u.primary.format).toBe('count')
   })
 
   it('puts every window percentage in the detail', () => {
@@ -116,10 +116,8 @@ describe('shared fields', () => {
     expect(u.total?.actualCost).toBeNull()
   })
 
-  it('defaults planName and unit instead of throwing when they are missing', () => {
-    const u = normalize({ mode: 'unrestricted', isValid: true, remaining: 1 }, NOW)
-    expect(u.planName).toBe('钱包余额')
-    expect(u.unit).toBe('USD')
+  it('defaults unit instead of throwing when it is missing', () => {
+    expect(normalize({ mode: 'unrestricted', isValid: true, remaining: 1 }, NOW).unit).toBe('USD')
   })
 })
 
@@ -196,6 +194,34 @@ describe('lanes', () => {
     const u = normalize(both, NOW)
     expect(u.mode).toBe('quota')
     expect(u.lanes).toHaveLength(1)
-    expect(u.rateLimits).toHaveLength(2)
+  })
+})
+
+describe('unknown numbers stay unknown', () => {
+  it('reports a rate window with no used/limit as an unknown percent rather than 0%', () => {
+    const u = normalize({ mode: 'quota_limited', rate_limits: [{ window: '5h' }] }, NOW)
+    expect(u.lanes[0]?.percent).toBeNull()
+    expect(u.primary.detail).toBe('5h ?')
+  })
+
+  it('reports a rate window with no remaining as null rather than 0', () => {
+    const body = { mode: 'quota_limited', rate_limits: [{ window: '5h', limit: 100, used: 82 }] }
+    expect(normalize(body, NOW).primary.value).toBeNull()
+  })
+
+  it('calls a missing subscription limit unknown, not unlimited', () => {
+    const lane = normalize({ mode: 'unrestricted', subscription: { monthly_usage_usd: 9 } }, NOW).lanes[2]
+    expect(lane?.unlimited).toBe(false)
+    expect(lane?.percent).toBeNull()
+  })
+
+  it('reports a subscription window with no usage as unknown and keeps it out of the minimum', () => {
+    const body = {
+      mode: 'unrestricted',
+      subscription: { daily_limit_usd: 20, weekly_usage_usd: 6, weekly_limit_usd: 20 },
+    }
+    const u = normalize(body, NOW)
+    expect(u.primary.detail).toBe('1d ? · 7d 30% · 1m ?')
+    expect(u.primary.value).toBe(14) // only the 7d window has a known remaining amount
   })
 })

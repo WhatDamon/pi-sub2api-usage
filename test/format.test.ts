@@ -6,6 +6,7 @@ import {
   formatCountdown,
   formatDetail,
   formatFooter,
+  formatPrimary,
   formatTokens,
   truncateToWidth,
   visibleWidth,
@@ -17,10 +18,13 @@ import type { SiteCredential } from '../src/config.ts'
 
 const usage: NormalizedUsage = {
   mode: 'wallet',
-  planName: '钱包余额',
   unit: 'USD',
-  sharedBalance: true,
-  primary: { label: 'Wallet balance (shared across keys)', value: 1.88485977, detail: undefined },
+  primary: {
+    label: 'Wallet balance (shared across keys)',
+    value: 1.88485977,
+    format: 'amount',
+    detail: undefined,
+  },
   today: { requests: 137, totalTokens: 19304722, cost: 0.524918538, actualCost: 0.1312296345 },
   total: { requests: 1326, totalTokens: 127093315, cost: 3.660560046, actualCost: 0.9151400115 },
   daily: [
@@ -34,9 +38,7 @@ const usage: NormalizedUsage = {
     { model: 'm-3', requests: 1, totalTokens: 10, actualCost: 0.0001 },
     { model: 'm-4', requests: 1, totalTokens: 10, actualCost: 0.00005 },
   ],
-  rateLimits: [],
   lanes: [],
-  isValid: true,
   fetchedAt: 1_760_000_000_000,
 }
 
@@ -246,6 +248,22 @@ describe('formatFooter', () => {
     }
   })
 
+  it('drops whole segments instead of cutting one in half when the line is too long', () => {
+    // Two windows whose countdowns together overflow the cap. Plain truncation stops at
+    // column 40, which here lands on the final bracket — leaving "[⟳ 29d12h" on screen.
+    const crowded = state({
+      mode: 'rate_limit',
+      lanes: [
+        lane('5h', 82, NOW + 3 * 3_600_000 + 12 * 60_000),
+        lane('1d', 75, NOW + 29 * 86_400_000 + 12 * 3_600_000),
+      ],
+    })
+    const out = formatFooter(crowded, PLAIN_PALETTE, NOW)
+    expect(visibleWidth(out)).toBeLessThanOrEqual(FOOTER_MAX_WIDTH)
+    expect((out.match(/\[/g) ?? []).length).toBe((out.match(/\]/g) ?? []).length)
+    expect(out).toBe('Sub2 5h 82% [⟳ 3h12m]')
+  })
+
   it('omits the Today segment for non-wallet modes', () => {
     const quota = state({ mode: 'quota', lanes: [lane('', 62)] })
     expect(formatFooter(quota, PLAIN_PALETTE, NOW)).not.toContain('Today')
@@ -399,9 +417,51 @@ describe('formatDetail', () => {
     const sub: NormalizedUsage = {
       ...usage,
       mode: 'subscription',
-      sharedBalance: false,
-      primary: { label: 'Subscription left', value: 4, detail: '1d 20% · 7d 30% · 1m 18%' },
+      primary: { label: 'Subscription left', value: 4, format: 'amount', detail: '1d 20% · 7d 30% · 1m 18%' },
     }
     expect(formatDetail(sub, site)).toContain('Subscription left $4.00  1d 20% · 7d 30% · 1m 18%')
+  })
+
+  it('renders a rate-limit window as a request count rather than as dollars', () => {
+    const rateLimited: NormalizedUsage = {
+      ...usage,
+      mode: 'rate_limit',
+      primary: { label: '5h window left', value: 18, format: 'count', detail: '5h 82% · 1d 75%' },
+    }
+    expect(formatDetail(rateLimited, site)).toContain('5h window left 18  5h 82% · 1d 75%')
+    expect(formatDetail(rateLimited, site)).not.toContain('$18.00')
+  })
+
+  it('omits the request count for a model whose count is unknown instead of printing 0 req', () => {
+    const out = formatDetail(
+      { ...usage, byModel: [{ model: 'm-1', requests: null, totalTokens: 100, actualCost: 0.5 }] },
+      site,
+    )
+    expect(out).toContain('By model m-1 $0.5000 · 100 tok')
+    expect(out).not.toContain('0 req')
+  })
+})
+
+describe('formatPrimary', () => {
+  it('renders an amount at balance precision, not the 4-decimal spend precision', () => {
+    expect(formatPrimary(usage)).toBe('$1.88')
+  })
+
+  it('renders a count as a bare integer, never as currency', () => {
+    const rateLimited: NormalizedUsage = {
+      ...usage,
+      mode: 'rate_limit',
+      primary: { label: '5h window left', value: 18, format: 'count', detail: '5h 82%' },
+    }
+    expect(formatPrimary(rateLimited)).toBe('18')
+  })
+
+  it('renders an unknown value as a dash in both formats', () => {
+    expect(formatPrimary({ ...usage, primary: { ...usage.primary, value: null } })).toBe('—')
+    const unknownCount: NormalizedUsage = {
+      ...usage,
+      primary: { ...usage.primary, value: null, format: 'count' },
+    }
+    expect(formatPrimary(unknownCount)).toBe('—')
   })
 })

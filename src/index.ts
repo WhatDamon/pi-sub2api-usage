@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { fetchUsage } from './client.ts'
 import { listCandidateSites, resolveCurrentSite, type CredentialSource, type SiteCredential } from './config.ts'
-import { formatAmount, formatDetail, formatFooter, type Palette } from './format.ts'
+import { formatDetail, formatFooter, formatPrimary, type Palette } from './format.ts'
 import { normalize, type NormalizedUsage } from './normalize.ts'
 import { notify, setFooter } from './ui.ts'
 
@@ -18,7 +18,7 @@ export interface RefresherDeps {
 }
 
 export interface Refresher {
-  refresh(options?: { force?: boolean; timeoutMs?: number }): Promise<void>
+  refresh(options?: { timeoutMs?: number }): Promise<void>
   describe(): Promise<string>
   reset(): void
 }
@@ -157,8 +157,10 @@ export function createRefresher(deps: RefresherDeps): Refresher {
         try {
           const usage = normalize(result.body)
           hits += 1
-          const balance = formatAmount(usage.primary.value, usage.unit)
-          lines.push(`${candidate.provider} ${candidate.usageUrl} → ${balance}`)
+          // `formatPrimary` keeps this line agreeing with the detail view on precision and
+          // on terms, so one balance cannot read as two different numbers.
+          const shown = formatPrimary(usage)
+          lines.push(`${candidate.provider} ${candidate.usageUrl} → ${shown}`)
           continue
         } catch {
           /* a normalisation failure counts as no match */
@@ -194,7 +196,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     }
   }
 
-  function refresh(options: { force?: boolean; timeoutMs?: number } = {}): Promise<void> {
+  function refresh(options: { timeoutMs?: number } = {}): Promise<void> {
     if (inFlight) return inFlight
 
     const gen = generation
@@ -233,7 +235,10 @@ export default function createExtension(pi: ExtensionAPI): void {
     modelRegistry: ctx.modelRegistry,
   })
 
-  // The theme must be read live: ctx.ui.theme changes when the user switches themes, so it cannot be frozen at factory time.
+  // The theme must be read live: ctx.ui.theme changes when the user switches themes, so it
+  // cannot be frozen at factory time. Colouring stays TUI-only on purpose: Pi reports no
+  // theme support in RPC mode (`getAllThemes()` returns an empty list), so status text there
+  // is sent as plain characters rather than as escape sequences.
   const palette: Palette = {
     fg: (color, text) => (currentCtx?.mode === 'tui' ? currentCtx.ui.theme.fg(color, text) : text),
   }
@@ -248,19 +253,19 @@ export default function createExtension(pi: ExtensionAPI): void {
   })
 
   // Fire-and-forget: refresh() guarantees it never rejects, so this catch is only a second line of defence.
-  const kick = (ctx: ExtensionContext, force: boolean): void => {
+  const kick = (ctx: ExtensionContext): void => {
     currentCtx = ctx
-    void refresher.refresh({ force }).catch(() => {})
+    void refresher.refresh().catch(() => {})
   }
 
   pi.on('session_start', (_event, ctx) => {
     currentCtx = ctx
     refresher.reset()
-    kick(ctx, true)
+    kick(ctx)
   })
 
   pi.on('agent_settled', (_event, ctx) => {
-    kick(ctx, false)
+    kick(ctx)
   })
 
   pi.on('model_select', (event, ctx) => {
@@ -268,8 +273,10 @@ export default function createExtension(pi: ExtensionAPI): void {
     const provider = event.model.provider
     if (provider === lastProvider) return
     lastProvider = provider
+    // reset() drops the cached value and the in-flight request, so the refresh that
+    // follows always starts a fresh one. That is why refresh() needs no force option.
     refresher.reset()
-    kick(ctx, true)
+    kick(ctx)
   })
 
   pi.on('session_shutdown', (_event, ctx) => {
@@ -286,7 +293,7 @@ export default function createExtension(pi: ExtensionAPI): void {
     handler: async (_args, ctx) => {
       try {
         currentCtx = ctx
-        await refresher.refresh({ force: true })
+        await refresher.refresh()
         notify(ctx, await refresher.describe())
       } catch {
         /* A command handler must never throw into Pi */

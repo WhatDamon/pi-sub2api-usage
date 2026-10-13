@@ -95,4 +95,34 @@ describe('listCandidateSites', () => {
     expect(sites.map((s) => s.provider)).toEqual(['a', 'c'])
     expect(sites.map((s) => s.usageUrl)).toEqual(['https://h1/v1/usage', 'https://h3/v1/usage'])
   })
+
+  it('resolves every provider concurrently instead of one after another', async () => {
+    // Resolving keys serially dispatches the second lookup only once the first resolved, so
+    // the dispatch count below would stall at 1. `/sub2-usage` would then wait for the sum of
+    // every lookup rather than for the slowest one.
+    let dispatched = 0
+    const releases: Array<() => void> = []
+    const src: CredentialSource = {
+      model: undefined,
+      modelRegistry: {
+        getApiKeyForProvider: async () => {
+          dispatched += 1
+          await new Promise<void>((resolve) => releases.push(resolve))
+          return 'sk-x'
+        },
+        getAll: () => [
+          { provider: 'a', baseUrl: 'https://h1' },
+          { provider: 'b', baseUrl: 'https://h2' },
+          { provider: 'c', baseUrl: 'https://h3' },
+        ],
+      },
+    }
+
+    const pending = listCandidateSites(src)
+    for (let i = 0; i < 200 && dispatched < 3; i += 1) await Promise.resolve()
+    expect(dispatched).toBe(3)
+
+    for (const release of releases) release()
+    expect((await pending).map((s) => s.provider)).toEqual(['a', 'b', 'c'])
+  })
 })

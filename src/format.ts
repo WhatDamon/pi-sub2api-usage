@@ -213,6 +213,20 @@ export function formatAmount(value: number | null, unit = 'USD', digits = 4): st
 }
 
 /**
+ * The primary value rendered in its own terms.
+ *
+ * Not every primary value is money: in rate-limit mode it counts requests, and running a
+ * count through the currency formatter turns "18 requests left" into `$18.00`. Keeping
+ * this in one place is also what stops `/sub2-usage` and its candidate list from
+ * disagreeing about precision.
+ */
+export function formatPrimary(usage: NormalizedUsage): string {
+  const value = usage.primary.value
+  if (usage.primary.format === 'count') return value === null ? '—' : String(value)
+  return formatAmount(value, usage.unit, BALANCE_DIGITS)
+}
+
+/**
  * Reset countdown in a compact format (`42m` / `3h12m` / `2d3h`).
  *
  * Returns `null` when already expired or when there is no reset time, so the caller
@@ -292,18 +306,38 @@ export function formatFooter(state: FooterState, palette: Palette, now: number):
   // The joiner is painted dim as well. Left bare it would render in the terminal's
   // default foreground, leaving a bright dot sitting between two dim segments.
   const separator = palette.fg('dim', ' · ')
-  return truncateToWidth(`${label} ${stale ? '~' : ''}${segments.join(separator)}`, FOOTER_MAX_WIDTH)
+
+  // Add whole segments while they fit. Plain truncation stops mid-segment, which can cut
+  // a countdown in half and leave an unclosed bracket on screen.
+  let out = `${label} `
+  let placed = 0
+  for (const segment of segments) {
+    const prefix = placed === 0 ? (stale ? '~' : '') : separator
+    const candidate = `${out}${prefix}${segment}`
+    if (visibleWidth(candidate) > FOOTER_MAX_WIDTH) break
+    out = candidate
+    placed += 1
+  }
+
+  // Nothing fitted at all, and a bare label carries no information: fall back to plain
+  // truncation so as much of the first segment as possible is still shown.
+  if (placed === 0) {
+    return truncateToWidth(`${label} ${stale ? '~' : ''}${segments.join(separator)}`, FOOTER_MAX_WIDTH)
+  }
+
+  return truncateToWidth(out, FOOTER_MAX_WIDTH)
 }
 
 export function formatDetail(usage: NormalizedUsage, site: SiteCredential): string {
-  const balance = (value: number | null): string => formatAmount(value, usage.unit, BALANCE_DIGITS)
   const amount = (value: number | null): string => formatAmount(value, usage.unit, COST_DIGITS)
   const lines: string[] = []
 
   lines.push(`sub2api · ${site.provider}`)
   lines.push(site.baseUrl)
 
-  const primary = `${usage.primary.label} ${balance(usage.primary.value)}`
+  // `formatPrimary` decides between an amount and a count; spend always renders at
+  // COST_DIGITS, which is why the two are no longer the same helper.
+  const primary = `${usage.primary.label} ${formatPrimary(usage)}`
   lines.push(usage.primary.detail === undefined ? primary : `${primary}  ${usage.primary.detail}`)
 
   const today = usageLine('Today', usage.today, usage.unit)
@@ -320,8 +354,14 @@ export function formatDetail(usage: NormalizedUsage, site: SiteCredential): stri
 
   if (usage.byModel.length > 0) {
     const groups = usage.byModel.slice(0, 3).map((entry) => {
-      const cells = `${amount(entry.actualCost)} · ${formatTokens(entry.totalTokens)} tok · ${entry.requests ?? 0} req`
-      return `${entry.model} ${cells}`
+      // An unknown request count is left out rather than printed as "0 req", which would
+      // be a number the backend never reported.
+      const cells = [
+        amount(entry.actualCost),
+        `${formatTokens(entry.totalTokens)} tok`,
+        entry.requests === null ? null : `${entry.requests} req`,
+      ].filter((cell): cell is string => cell !== null)
+      return `${entry.model} ${cells.join(' · ')}`
     })
     lines.push(`By model ${groups.join(' · ')}`)
   }

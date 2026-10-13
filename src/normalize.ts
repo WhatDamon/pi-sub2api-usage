@@ -20,12 +20,13 @@ export interface ModelBucket {
   actualCost: number | null
 }
 
-export interface RateLimitWindow {
+/** One rate-limit window. Every numeric field is nullable: the backend may omit any of them. */
+interface RateLimitWindow {
   window: string
-  limit: number
-  used: number
-  remaining: number
-  usedRatio: number
+  limit: number | null
+  used: number | null
+  remaining: number | null
+  usedRatio: number | null
   resetAt: string | null
 }
 
@@ -45,17 +46,23 @@ export interface UsageLane {
 
 export interface NormalizedUsage {
   mode: UsageMode
-  planName: string
   unit: string
-  sharedBalance: boolean
-  primary: { label: string; value: number | null; detail: string | undefined }
+  primary: {
+    label: string
+    value: number | null
+    detail: string | undefined
+    /**
+     * How `value` must be rendered. Not every primary value is money: in rate-limit
+     * mode it counts requests, and formatting a count as currency turns "18 requests
+     * left" into `$18.00`.
+     */
+    format: 'amount' | 'count'
+  }
   today: UsageBucket | null
   total: UsageBucket | null
   daily: DailyBucket[]
   byModel: ModelBucket[]
-  rateLimits: RateLimitWindow[]
   lanes: UsageLane[]
-  isValid: boolean
   fetchedAt: number
 }
 
@@ -165,18 +172,40 @@ function parseRateLimits(value: unknown): RateLimitWindow[] {
     if (!record) continue
     const window = str(record.window)
     if (window === null) continue
-    const limit = num(record.limit) ?? 0
-    const used = num(record.used) ?? 0
+    const limit = num(record.limit)
+    const used = num(record.used)
     out.push({
       window,
       limit,
       used,
-      remaining: num(record.remaining) ?? 0,
-      usedRatio: limit > 0 ? used / limit : 0,
+      remaining: num(record.remaining),
+      // A ratio needs both numbers. Without them the window's usage is simply unknown,
+      // and reporting 0% would read as "nothing used yet".
+      usedRatio: limit !== null && used !== null && limit > 0 ? used / limit : null,
       resetAt: str(record.reset_at),
     })
   }
   return out
+}
+
+/** Renders a used ratio for the detail line; an unknown ratio must not become 0%. */
+function percentText(ratio: number | null): string {
+  return ratio === null ? '?' : `${Math.round(ratio * 100)}%`
+}
+
+/**
+ * The window closest to its cap, which names what the primary value refers to.
+ * A window with an unknown ratio can never win, so a known one is always preferred.
+ */
+function peakWindow(windows: readonly RateLimitWindow[]): RateLimitWindow | undefined {
+  let best: RateLimitWindow | undefined
+  for (const window of windows) {
+    if (window.usedRatio === null) continue
+    if (best === undefined || best.usedRatio === null || window.usedRatio > best.usedRatio) {
+      best = window
+    }
+  }
+  return best
 }
 
 /** `reset_at` is an ISO string; a parse failure returns null so NaN never reaches the renderer. */
@@ -208,11 +237,21 @@ function subscriptionParts(subscription: Record<string, unknown>): {
 
   for (const { key, label } of SUBSCRIPTION_WINDOWS) {
     const limit = num(subscription[`${key}_limit_usd`])
-    const used = num(subscription[`${key}_usage_usd`]) ?? 0
+    const used = num(subscription[`${key}_usage_usd`])
 
-    if (limit === null || limit < 0) {
+    // Only an explicit negative limit means "uncapped". A missing limit is unknown, and
+    // reporting it as unlimited would promise something the backend never said.
+    if (limit !== null && limit < 0) {
       parts.push(`${label} unlimited`)
       lanes.push({ label, percent: null, resetAt: null, unlimited: true })
+      continue
+    }
+
+    // A known limit with unknown consumption is unknown, not "0% used". It also cannot
+    // contribute a remaining amount: `limit - 0` would overstate what is left.
+    if (limit === null || used === null) {
+      parts.push(`${label} ?`)
+      lanes.push({ label, percent: null, resetAt: null, unlimited: false })
       continue
     }
 
@@ -254,12 +293,17 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
   let primary: NormalizedUsage['primary']
   let lanes: UsageLane[]
 
+  // Reading the first window here, rather than testing `rateLimits.length > 0`, is what
+  // lets the rate-limit branch use a window without a non-null assertion.
+  const firstRateWindow = rateLimits[0]
+
   if (quotaLimit !== null && quotaLimit > 0) {
     mode = 'quota'
     const quotaUsed = quota ? num(quota.used) : null
     primary = {
       label: 'Quota left',
       value: quota ? num(quota.remaining) : null,
+      format: 'amount',
       detail: `used ${show(quotaUsed)} / ${show(quotaLimit)}`,
     }
     // Quota itself carries no reset timestamp (only `expires_at`), so no countdown.
@@ -271,30 +315,38 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
         unlimited: false,
       },
     ]
-  } else if (rateLimits.length > 0) {
+  } else if (firstRateWindow !== undefined) {
     mode = 'rate_limit'
-    const peak = rateLimits.reduce((best, current) => (current.usedRatio > best.usedRatio ? current : best))
+    const peak = peakWindow(rateLimits) ?? firstRateWindow
     primary = {
       label: `${peak.window} window left`,
+      // `limit`/`used`/`remaining` count requests here, not money.
       value: peak.remaining,
-      detail: rateLimits.map((w) => `${w.window} ${Math.round(w.usedRatio * 100)}%`).join(' · '),
+      format: 'count',
+      detail: rateLimits.map((w) => `${w.window} ${percentText(w.usedRatio)}`).join(' · '),
     }
     lanes = rateLimits.map((window) => ({
       label: window.window,
-      percent: window.usedRatio * 100,
+      percent: window.usedRatio === null ? null : window.usedRatio * 100,
       resetAt: parseResetAt(window.resetAt),
       unlimited: false,
     }))
   } else if (subscription && Object.keys(subscription).length > 0) {
     mode = 'subscription'
     const summary = subscriptionParts(subscription)
-    primary = { label: 'Subscription left', value: summary.value, detail: summary.detail }
+    primary = {
+      label: 'Subscription left',
+      value: summary.value,
+      format: 'amount',
+      detail: summary.detail,
+    }
     lanes = summary.lanes
   } else {
     mode = 'wallet'
     primary = {
       label: 'Wallet balance (shared across keys)',
       value: num(record.remaining) ?? num(record.balance),
+      format: 'amount',
       detail: undefined,
     }
     lanes = []
@@ -304,20 +356,13 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
 
   return {
     mode,
-    // `planName` is a backend-supplied label that we only pass through, never
-    // render ourselves. sub2api returns Chinese names ("钱包余额" for wallet
-    // mode), so the fallback deliberately mirrors the backend's own vocabulary.
-    planName: str(record.planName) ?? '钱包余额',
     unit: str(record.unit) ?? 'USD',
-    sharedBalance: mode === 'wallet',
     primary,
     today: bucket(asRecord(usage?.today)),
     total: bucket(asRecord(usage?.total)),
     daily: parseDaily(record.daily_usage),
     byModel: parseByModel(record.model_stats),
-    rateLimits,
     lanes,
-    isValid: record.isValid !== false,
     fetchedAt: now ?? Date.now(),
   }
 }

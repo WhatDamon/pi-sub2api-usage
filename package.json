@@ -1,6 +1,6 @@
 {
   "name": "pi-sub2api-usage",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Show the current sub2api site's balance and today's actual spend in the Pi footer (read-only)",
   "keywords": [
@@ -33,8 +33,8 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": ">=0.83.0",
+    "@earendil-works/pi-tui": ">=0.74.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

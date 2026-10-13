@@ -85,6 +85,20 @@ describe('fetchUsage classification', () => {
     expect(r.kind).toBe('network-error')
   })
 
+  it('reports network-error instead of hanging when the response body never arrives', async () => {
+    // The headers arrive but the body stalls, and the implementation ignores the abort
+    // signal. The fetch call itself settles, so only a deadline around the body read
+    // can keep the refresh from waiting forever — and a refresh stuck in flight is
+    // never cleared, which would freeze every later refresh as well.
+    const stalledBody = (async () => ({
+      status: 200,
+      ok: true,
+      json: () => new Promise<never>(() => {}),
+    })) as unknown as typeof fetch
+    const r = await fetchUsage(site, { fetchImpl: stalledBody, timeoutMs: 20 })
+    expect(r.kind).toBe('network-error')
+  })
+
   it('sends Bearer and the pi User-Agent, and keeps the key out of the URL', async () => {
     let seen: { url: string; init: RequestInit | undefined } | undefined
     const spy = (async (url: URL | string, init?: RequestInit) => {

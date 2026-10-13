@@ -67,15 +67,20 @@ export async function resolveCurrentSite(source: CredentialSource): Promise<Site
 /** Lists every site with resolvable credentials in Pi's config, deduplicated by provider and keeping first-seen order. */
 export async function listCandidateSites(source: CredentialSource): Promise<SiteCredential[]> {
   try {
+    // Deduplicate first, then resolve every key at once. Resolving them one after another
+    // would make `/sub2-usage` wait for the sum of all lookups rather than for the slowest.
     const seen = new Set<string>()
-    const sites: SiteCredential[] = []
+    const providers: Array<{ provider: string; baseUrl: string }> = []
     for (const model of source.modelRegistry.getAll()) {
       if (seen.has(model.provider)) continue
       seen.add(model.provider)
-      const site = await buildSite(model.provider, model.baseUrl, source)
-      if (site) sites.push(site)
+      providers.push({ provider: model.provider, baseUrl: model.baseUrl })
     }
-    return sites
+
+    const sites = await Promise.all(
+      providers.map((model) => buildSite(model.provider, model.baseUrl, source)),
+    )
+    return sites.filter((site): site is SiteCredential => site !== undefined)
   } catch {
     return []
   }

@@ -16,13 +16,23 @@ This extension does balance and nothing else, so it stays completely out of the 
 
 ## Install
 
-Try it without touching your config:
+```bash
+pi install npm:pi-sub2api-usage
+```
+
+Try it for a single invocation without declaring anything:
+
+```bash
+pi -e npm:pi-sub2api-usage
+```
+
+From a checkout, load the extension file directly:
 
 ```bash
 pi --extension ./src/index.ts
 ```
 
-To declare it as a local package, add this directory to Pi's extension list or point `pi install` at it. The package manifest already declares `pi.extensions`.
+The package manifest declares `pi.extensions`, so nothing else is needed.
 
 ## What it looks like
 
@@ -63,7 +73,9 @@ Precision: **balance 2 decimals, spend 4**. A single turn often costs $0.001–$
 | `Sub2 ?` | The request failed and there is no cached value |
 | (empty) | The current model is not a sub2api site |
 
-The entire status text is an OSC 8 hyperlink pointing at the site root; it degrades to plain text on terminals that do not support hyperlinks.
+The entire status text is an OSC 8 hyperlink pointing at the site root; it degrades to plain text on terminals that do not support hyperlinks, and the sequence is only applied in TUI mode.
+
+The footer is published through `ctx.ui.setStatus`, so it appears under whichever status-bar composer is installed. It also works in RPC mode, where Pi supports `setStatus` but reports no theme support — so the text travels uncoloured there.
 
 ### `/sub2-usage`
 
@@ -90,7 +102,8 @@ That is why the detail line in wallet mode is labelled "shared across keys".
 ## Requirements
 
 - **A sub2api site already configured in Pi's own config** — a provider in `models.json` with credentials that can be resolved. The extension does not read CC Switch, Claude Code or Codex config files.
-- Node ≥ 22.19.
+- Node ≥ 22.19 — this is Pi's own floor, so the extension cannot ask for less.
+- Pi ≥ 0.83.0 — the release that introduced the `agent_settled` event used for the per-turn refresh. Below that the footer would still render, but it would never update after a turn.
 - The site must expose `GET {base}/v1/usage` with Bearer API key auth. An older sub2api without that endpoint is silently classified as "not a sub2api site".
 - `baseUrl` may be written as `https://host` or `https://host/v1`; either is normalised.
 
@@ -114,4 +127,4 @@ npm test          # vitest, fully offline
 npm run typecheck # tsc --noEmit
 ```
 
-The extension has no runtime dependencies: `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` are both supplied by Pi at runtime, which is why they are only devDependencies.
+The extension has no runtime dependencies. `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` are supplied by Pi at runtime, so they are declared as `peerDependencies` and deliberately not bundled — a physical copy can bypass Pi's extension module mapping and produce duplicate module instances.
