@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Keep the action versions in .github/workflows current. Actions run with
+  # repository write access, so wait a week before consuming a release.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: 'ci'
+
+  # Keep the toolchain in package.json current.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 21
+    commit-message:
+      prefix: 'chore'

@@ -1,0 +1,80 @@
+name: publish
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for trusted publishing: lets the job request an OIDC
+      # token that the npm CLI exchanges for a short-lived credential.
+      id-token: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          # Node 24 ships npm 11.x, above the 11.5.1 floor that trusted
+          # publishing requires. Node 22 only ships npm 10.x.
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Verify the npm CLI supports trusted publishing
+        run: |
+          installed="$(npm --version)"
+          floor='11.5.1'
+          oldest="$(printf '%s\n%s\n' "$floor" "$installed" | sort -V)"
+          oldest="$(printf '%s' "$oldest" | head -n 1)"
+          if [ "$oldest" != "$floor" ]; then
+            msg="trusted publishing needs npm >= $floor, got $installed"
+            echo "::error::$msg"
+            exit 1
+          fi
+          echo "npm $installed on Node $(node --version)"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Check whether this version is already on the registry
+        id: registry
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$name@$version is already published"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::publishing $name@$version"
+          fi
+
+      # No token and no --provenance flag: authentication comes from the
+      # OIDC token above, and provenance is generated automatically.
+      - name: Publish
+        if: steps.registry.outputs.published == 'false'
+        run: npm publish
