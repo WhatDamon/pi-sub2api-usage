@@ -13,12 +13,18 @@ export interface RefresherDeps {
   palette: Palette
   setStatus: (text: string | undefined, link?: string) => void
   timeoutMs?: number
+  /**
+   * Minimum spacing between two dispatched requests. Turn-by-turn refreshes are throttled by
+   * this so that a long run cannot turn into one gateway request per turn. A forced refresh
+   * ignores it.
+   */
+  minIntervalMs?: number
   /** Lets tests inject a fixed clock for reset countdowns and relative times; defaults to Date.now. */
   now?: () => number
 }
 
 export interface Refresher {
-  refresh(options?: { timeoutMs?: number }): Promise<void>
+  refresh(options?: { force?: boolean; timeoutMs?: number }): Promise<void>
   describe(): Promise<string>
   reset(): void
 }
@@ -34,6 +40,16 @@ function minutesAgo(fetchedAt: number, now: number): number {
   return Math.max(0, Math.round((now - fetchedAt) / 60_000))
 }
 
+/**
+ * How long a turn-by-turn refresh is suppressed for.
+ *
+ * One prompt can run for many minutes and emits a `turn_end` roughly every 11s, while
+ * `agent_settled` fires only once at the very end. Refreshing on every turn would put one
+ * request per turn on the gateway for no new information, so the cheap path is throttled
+ * to about two per minute — still fast enough to watch the spend climb.
+ */
+const DEFAULT_MIN_INTERVAL_MS = 30_000
+
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
@@ -47,6 +63,9 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   let last: { site: SiteCredential; usage: NormalizedUsage } | undefined
   let outcome: RefreshOutcome | undefined
   let inFlight: Promise<void> | undefined
+  /** When the last request was dispatched. Starts at -Infinity so the very first refresh is never throttled. */
+  let lastDispatchAt = Number.NEGATIVE_INFINITY
+  const minIntervalMs = deps.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS
 
   /**
    * Generation counter. `reset()` increments it, which expires any **in-flight** refresh.
@@ -196,9 +215,18 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     }
   }
 
-  function refresh(options: { timeoutMs?: number } = {}): Promise<void> {
+  function refresh(options: { force?: boolean; timeoutMs?: number } = {}): Promise<void> {
+    // An in-flight request is reused even when the call is forced. That is safe: it was
+    // dispatched at most one turn ago, and no spend can happen between a `turn_end` and the
+    // `agent_settled` that follows it, so its numbers are never stale. Keeping exactly one
+    // request in flight is what stops a burst of tool calls becoming a burst of requests.
     if (inFlight) return inFlight
 
+    // Only the events whose number the user is actually waiting for pass force; everything
+    // else is spaced out so a turn-by-turn cadence stays cheap.
+    if (options.force !== true && now() - lastDispatchAt < minIntervalMs) return Promise.resolve()
+
+    lastDispatchAt = now()
     const gen = generation
     const started = (async () => {
       try {
@@ -221,6 +249,8 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     last = undefined
     outcome = undefined
     inFlight = undefined
+    // A newly selected site has never been queried, so it must not inherit the old site's throttle window.
+    lastDispatchAt = Number.NEGATIVE_INFINITY
   }
 
   return { refresh, describe, reset }
@@ -253,9 +283,9 @@ export default function createExtension(pi: ExtensionAPI): void {
   })
 
   // Fire-and-forget: refresh() guarantees it never rejects, so this catch is only a second line of defence.
-  const kick = (ctx: ExtensionContext): void => {
+  const kick = (ctx: ExtensionContext, force = false): void => {
     currentCtx = ctx
-    void refresher.refresh().catch(() => {})
+    void refresher.refresh({ force }).catch(() => {})
   }
 
   pi.on('session_start', (_event, ctx) => {
@@ -264,8 +294,23 @@ export default function createExtension(pi: ExtensionAPI): void {
     kick(ctx)
   })
 
-  pi.on('agent_settled', (_event, ctx) => {
+  // `agent_settled` fires once, at the very end of a run, while `turn_end` fires once per LLM
+  // turn inside it. One prompt can last many minutes and dozens of tool calls, so refreshing on
+  // `agent_settled` alone freezes the footer for the whole of a long run — exactly when the spend
+  // is climbing. `turn_end` already follows the tool results of its turn, so it covers "after a
+  // tool call" as well, and `input` catches the moment just before the user spends again.
+  pi.on('turn_end', (_event, ctx) => {
     kick(ctx)
+  })
+
+  pi.on('input', (_event, ctx) => {
+    kick(ctx)
+  })
+
+  pi.on('agent_settled', (_event, ctx) => {
+    // Forced, so the authoritative end-of-run number cannot be swallowed by the throttle window
+    // that the last turn_end opened.
+    kick(ctx, true)
   })
 
   pi.on('model_select', (event, ctx) => {

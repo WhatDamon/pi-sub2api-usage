@@ -34,6 +34,8 @@ pi --extension ./src/index.ts
 
 The package manifest declares `pi.extensions`, so nothing else is needed.
 
+Note that loading a checkout with `--extension ./src/index.ts` while the package is also installed from npm loads the extension twice. Both copies write the same status key, so every refresh arrives in pairs and `/sub2-usage` is registered twice.
+
 ## What it looks like
 
 The footer follows whichever billing mode the site reports. Each of the four has its own reading:
@@ -103,15 +105,26 @@ That is why the detail line in wallet mode is labelled "shared across keys".
 
 - **A sub2api site already configured in Pi's own config** — a provider in `models.json` with credentials that can be resolved. The extension does not read CC Switch, Claude Code or Codex config files.
 - Node ≥ 22.19 — this is Pi's own floor, so the extension cannot ask for less.
-- Pi ≥ 0.83.0 — the release that introduced the `agent_settled` event used for the per-turn refresh. Below that the footer would still render, but it would never update after a turn.
+- Pi ≥ 0.83.0 — the release that introduced the `agent_settled` event used for the end-of-run refresh. Below that the footer would still render, but no run would ever refresh it.
 - The site must expose `GET {base}/v1/usage` with Bearer API key auth. An older sub2api without that endpoint is silently classified as "not a sub2api site".
 - `baseUrl` may be written as `https://host` or `https://host/v1`; either is normalised.
 
 ## When it refreshes
 
-`session_start`, the end of every agent turn (`agent_settled`), on model switch (`model_select`), and when you run `/sub2-usage`.
+| Trigger | Fires when | Throttled? |
+|---|---|---|
+| `session_start` | a session opens or resumes | no |
+| `input` | you send a message | yes |
+| `turn_end` | one LLM turn finishes, after its tool results land | yes |
+| `agent_settled` | the whole run finishes | **no, forced** |
+| `model_select` | the provider changes | no |
+| `/sub2-usage` | you run the command | no |
 
-There are no timers and no background polling — a session issues "1 + number of turns" requests, each with a 5-second timeout, and the second-tier candidate probe is concurrent. Every request is fire-and-forget and never blocks the conversation.
+`turn_end` is what keeps a long run moving. A single prompt can run for many minutes and execute dozens of tool calls, while `agent_settled` fires only once, at the very end — so refreshing on that alone would freeze the footer for the whole run, which is exactly when the spend climbs fastest. `turn_end` already follows its turn's tool results, so it also covers "after a tool call".
+
+Turn-by-turn refreshes are throttled to one request per 30 seconds, and only one request is ever in flight. A ten-minute run therefore issues roughly twenty requests instead of one per turn. The `agent_settled` refresh bypasses the throttle, so the number you get at the end of a run is never swallowed by the window the last `turn_end` opened.
+
+There are no timers and no background polling: the extension acts only on the events above and issues nothing at all while a session sits idle. Each request has a 5-second timeout, the second-tier candidate probe is concurrent, and every request is fire-and-forget and never blocks the conversation.
 
 ## Security
 

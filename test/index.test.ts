@@ -116,9 +116,13 @@ describe('createRefresher', () => {
       if (mode === 'fail') throw new Error('down')
       return new Response(JSON.stringify(walletBody), { status: 200, headers: { 'content-type': 'application/json' } })
     }) as unknown as typeof fetch
-    const { refresher, statuses } = makeRefresher({ fetchImpl: flaky })
+    let clock = NOW
+    const { refresher, statuses } = makeRefresher({ fetchImpl: flaky, now: () => clock })
     await refresher.refresh()
     mode = 'fail'
+    // One minute apart, which is how two refreshes actually arrive in a session: a bare
+    // refresh() is throttled, so two calls in the same millisecond are not the same scenario.
+    clock += 60_000
     await refresher.refresh()
     expect(statuses.at(-1)).toBe('Sub2 ~$1.88')
   })
@@ -182,8 +186,127 @@ describe('createRefresher', () => {
   })
 })
 
+describe('refresh cadence during a long run', () => {
+  const counting = (counter: { calls: number }): typeof fetch =>
+    (async () => {
+      counter.calls += 1
+      return new Response(JSON.stringify(walletBody), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+
+  const jsonOk = (): Response =>
+    new Response(JSON.stringify(walletBody), { status: 200, headers: { 'content-type': 'application/json' } })
+
+  /** `run()` resolves the site before it dispatches, so the request is never sent synchronously. */
+  const dispatched = async (predicate: () => boolean): Promise<void> => {
+    for (let i = 0; i < 400 && !predicate(); i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+
+  it('collapses the turn-by-turn refreshes that land inside the minimum interval', async () => {
+    // One user prompt runs for many minutes and emits a turn_end roughly every 11s. Querying
+    // on every one of them would put a request per turn on the gateway for no new information.
+    const counter = { calls: 0 }
+    let clock = NOW
+    const { refresher } = makeRefresher({ fetchImpl: counting(counter), minIntervalMs: 30_000, now: () => clock })
+
+    await refresher.refresh()
+    clock += 1_000
+    await refresher.refresh()
+    clock += 1_000
+    await refresher.refresh()
+    expect(counter.calls).toBe(1)
+  })
+
+  it('refreshes again once the minimum interval has passed', async () => {
+    const counter = { calls: 0 }
+    let clock = NOW
+    const { refresher } = makeRefresher({ fetchImpl: counting(counter), minIntervalMs: 30_000, now: () => clock })
+
+    await refresher.refresh()
+    clock += 31_000
+    await refresher.refresh()
+    expect(counter.calls).toBe(2)
+  })
+
+  it('defaults to a 30s minimum interval', async () => {
+    const counter = { calls: 0 }
+    let clock = NOW
+    const { refresher } = makeRefresher({ fetchImpl: counting(counter), now: () => clock })
+
+    await refresher.refresh()
+    clock += 29_000
+    await refresher.refresh()
+    expect(counter.calls).toBe(1)
+    clock += 2_000
+    await refresher.refresh()
+    expect(counter.calls).toBe(2)
+  })
+
+  it('a forced refresh ignores the minimum interval', async () => {
+    // agent_settled fires once, at the very end of a run. That is the number the user is
+    // waiting for, so it must never be swallowed by the throttle window.
+    const counter = { calls: 0 }
+    let clock = NOW
+    const { refresher } = makeRefresher({ fetchImpl: counting(counter), minIntervalMs: 30_000, now: () => clock })
+
+    await refresher.refresh()
+    clock += 1_000
+    await refresher.refresh({ force: true })
+    expect(counter.calls).toBe(2)
+  })
+
+  it('a failed refresh still opens the interval, so a gateway that is down is not hammered', async () => {
+    const counter = { calls: 0 }
+    let clock = NOW
+    const boom = (async () => {
+      counter.calls += 1
+      throw new Error('down')
+    }) as unknown as typeof fetch
+    const { refresher } = makeRefresher({ fetchImpl: boom, minIntervalMs: 30_000, now: () => clock })
+
+    await refresher.refresh()
+    clock += 1_000
+    await refresher.refresh()
+    expect(counter.calls).toBe(1)
+  })
+
+  it('reset() clears the interval too, so a newly selected site is queried immediately', async () => {
+    const counter = { calls: 0 }
+    let clock = NOW
+    const { refresher } = makeRefresher({ fetchImpl: counting(counter), minIntervalMs: 30_000, now: () => clock })
+
+    await refresher.refresh()
+    clock += 1_000
+    refresher.reset()
+    await refresher.refresh()
+    expect(counter.calls).toBe(2)
+  })
+
+  it('a forced refresh arriving while one is in flight keeps exactly one request in flight', async () => {
+    // Reusing the in-flight request is safe: it was dispatched at most one turn ago, and no
+    // spend can happen between a turn_end and the agent_settled that follows it. Keeping one
+    // request in flight is what stops a burst of tool calls becoming a burst of requests.
+    let calls = 0
+    const releases: Array<() => void> = []
+    const gated = (async () => {
+      calls += 1
+      await new Promise<void>((resolve) => releases.push(resolve))
+      return jsonOk()
+    }) as unknown as typeof fetch
+
+    const { refresher } = makeRefresher({ fetchImpl: gated, minIntervalMs: 30_000, now: () => NOW })
+    const first = refresher.refresh()
+    const forced = refresher.refresh({ force: true })
+    await dispatched(() => calls === 1)
+    expect(calls).toBe(1)
+
+    releases[0]?.()
+    await Promise.all([first, forced])
+    expect(calls).toBe(1)
+  })
+})
+
 describe('factory', () => {
-  it('registers no long-lived resources, only one command and four events', () => {
+  it('registers no long-lived resources, only one command and six events', () => {
     const commands: string[] = []
     const events: string[] = []
     const pi = {
@@ -192,7 +315,16 @@ describe('factory', () => {
     }
     createExtension(pi as never)
     expect(commands).toEqual(['sub2-usage'])
-    expect(events.sort()).toEqual(['agent_settled', 'model_select', 'session_shutdown', 'session_start'])
+    // turn_end and input are what keep a long run's footer moving: agent_settled fires only
+    // once, at the very end, and a single prompt can run for many minutes and dozens of turns.
+    expect(events.sort()).toEqual([
+      'agent_settled',
+      'input',
+      'model_select',
+      'session_shutdown',
+      'session_start',
+      'turn_end',
+    ])
   })
 
   it('performs no network request inside the factory body', () => {
@@ -202,6 +334,135 @@ describe('factory', () => {
     try {
       createExtension({ registerCommand: () => {}, on: () => () => {} } as never)
       expect(spy).not.toHaveBeenCalled()
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+})
+
+describe('factory refresh wiring', () => {
+  const waitFor = async (predicate: () => boolean): Promise<void> => {
+    for (let i = 0; i < 400 && !predicate(); i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+
+  const withClock = async (body: (advance: (ms: number) => void) => Promise<void>): Promise<void> => {
+    let clock = NOW
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    try {
+      await body((ms) => { clock += ms })
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  /** Wires the real factory to a fake Pi and a fake context, so the wiring itself is under test. */
+  const harness = (counter: { calls: number }) => {
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>()
+    const statuses: Array<string | undefined> = []
+    const pi = {
+      registerCommand: () => {},
+      on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+        handlers.set(event, handler)
+        return () => {}
+      },
+    }
+    const ctx = {
+      // RPC mode keeps the status text free of the OSC 8 link, so these assertions stay about
+      // *when* something is refreshed rather than about how it is rendered.
+      mode: 'rpc',
+      hasUI: true,
+      model: { provider: 'site-a', baseUrl: 'https://gw.example.com' },
+      modelRegistry: {
+        getApiKeyForProvider: async () => 'sk-secret-abcdef123456',
+        getAll: () => [{ provider: 'site-a', baseUrl: 'https://gw.example.com' }],
+      },
+      ui: {
+        theme: { fg: (_color: string, text: string) => text },
+        setStatus: (_key: string, text: string | undefined) => { statuses.push(text) },
+        notify: () => {},
+      },
+    }
+    globalThis.fetch = (async () => {
+      counter.calls += 1
+      return new Response(JSON.stringify(walletBody), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    createExtension(pi as never)
+    return { handlers, statuses, ctx }
+  }
+
+  const fire = async (
+    handlers: Map<string, (event: unknown, ctx: unknown) => unknown>,
+    name: string,
+    ctx: unknown,
+  ): Promise<void> => {
+    await handlers.get(name)?.({ type: name }, ctx)
+  }
+
+  it('refreshes on turn_end, which is what stops a long run freezing the footer', async () => {
+    const counter = { calls: 0 }
+    const original = globalThis.fetch
+    try {
+      await withClock(async (advance) => {
+        const { handlers, statuses, ctx } = harness(counter)
+        await fire(handlers, 'session_start', ctx)
+        await waitFor(() => counter.calls === 1)
+        expect(statuses.at(-1)).toBe('Sub2 $1.88')
+
+        // Inside the throttle window a turn_end must not add a request.
+        advance(1_000)
+        await fire(handlers, 'turn_end', ctx)
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        expect(counter.calls).toBe(1)
+
+        // Past it, the next turn refreshes again: this is what keeps the number moving.
+        advance(31_000)
+        await fire(handlers, 'turn_end', ctx)
+        await waitFor(() => counter.calls === 2)
+        // Assert the count, not just the text: the text is already 'Sub2 $1.88' from
+        // session_start, so without this the test would pass with turn_end unwired.
+        expect(counter.calls).toBe(2)
+        expect(statuses.at(-1)).toBe('Sub2 $1.88')
+      })
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  it('refreshes on input, so the balance is current when the user is about to spend', async () => {
+    const counter = { calls: 0 }
+    const original = globalThis.fetch
+    try {
+      await withClock(async (advance) => {
+        const { handlers, ctx } = harness(counter)
+        await fire(handlers, 'session_start', ctx)
+        await waitFor(() => counter.calls === 1)
+
+        advance(31_000)
+        await fire(handlers, 'input', ctx)
+        await waitFor(() => counter.calls === 2)
+        expect(counter.calls).toBe(2)
+      })
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  it('agent_settled refreshes even inside the minimum interval', async () => {
+    const counter = { calls: 0 }
+    const original = globalThis.fetch
+    try {
+      await withClock(async (advance) => {
+        const { handlers, ctx } = harness(counter)
+        await fire(handlers, 'session_start', ctx)
+        await waitFor(() => counter.calls === 1)
+
+        // The end of a run is the number the user is actually waiting for, so the throttle
+        // must not swallow it.
+        advance(1_000)
+        await fire(handlers, 'agent_settled', ctx)
+        await waitFor(() => counter.calls === 2)
+        expect(counter.calls).toBe(2)
+      })
     } finally {
       globalThis.fetch = original
     }
@@ -291,9 +552,11 @@ describe('fix round: review findings', () => {
     const flaky = (async () =>
       mode === 'ok' ? jsonResponse(walletBody) : new Response('{}', { status: 401 })) as unknown as typeof fetch
 
-    const { refresher } = makeRefresher({ fetchImpl: flaky })
+    let clock = NOW
+    const { refresher } = makeRefresher({ fetchImpl: flaky, now: () => clock })
     await refresher.refresh()
     mode = 'unauth'
+    clock += 60_000
     await refresher.refresh()
 
     const text = await refresher.describe()
