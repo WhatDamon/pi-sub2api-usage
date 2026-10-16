@@ -564,6 +564,54 @@ describe('fix round: review findings', () => {
     expect(text).not.toContain('Last success')
   })
 
+  it('#2 an invalid key stays visible when the next refresh cannot reach the gateway at all', async () => {
+    // A 401 is a completed exchange whose verdict is "this key is bad"; a network error is the
+    // absence of any answer. The second must not overwrite the first, or "your key expired"
+    // silently turns into an old balance marked `~`, which reads as a temporary blip.
+    let mode: 'ok' | 'unauth' | 'down' = 'ok'
+    const flaky = (async () => {
+      if (mode === 'down') throw new Error('connect ECONNREFUSED 127.0.0.1:443')
+      return mode === 'unauth' ? new Response('{}', { status: 401 }) : jsonResponse(walletBody)
+    }) as unknown as typeof fetch
+
+    let clock = NOW
+    const { refresher, statuses } = makeRefresher({ fetchImpl: flaky, now: () => clock })
+    await refresher.refresh()
+    mode = 'unauth'
+    clock += 60_000
+    await refresher.refresh()
+    expect(statuses.at(-1)).toBe('Sub2 !')
+
+    mode = 'down'
+    clock += 60_000
+    await refresher.refresh()
+
+    // With the bug this is 'Sub2 ~$1.88': the cached balance masks a key the gateway already rejected.
+    expect(statuses.at(-1)).toBe('Sub2 !')
+    const text = await refresher.describe()
+    expect(text).toContain('API key is invalid')
+    expect(text).not.toContain('Last success')
+    // The cached numbers survive, so the detail view is not reduced to a bare error either.
+    expect(text).toContain('Wallet balance')
+  })
+
+  it('#2 an invalid key with no cached balance is still reported as the problem, not the site', async () => {
+    // Without a cached balance the detail view used to fall through to the candidate list, whose
+    // headline ("not a sub2api site") and closing line ("no usable site in Pi config") both blame
+    // the site and point the user at the wrong action. The key is the problem and that is knowable
+    // from the 401 alone, so it must be the headline whether or not numbers were ever cached.
+    const unauthorized = (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch
+    const { refresher, statuses } = makeRefresher({ fetchImpl: unauthorized })
+
+    await refresher.refresh()
+    expect(statuses.at(-1)).toBe('Sub2 !')
+
+    const text = await refresher.describe()
+    expect(text).toContain('API key is invalid')
+    expect(text).not.toContain('not a sub2api site')
+    expect(text).not.toContain('No usable sub2api site')
+  })
+
   it('#2 with a network failure and no cached value, describe() reports the raw error', async () => {
     const boom = (async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:443') }) as unknown as typeof fetch
     const { refresher } = makeRefresher({ fetchImpl: boom })

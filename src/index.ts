@@ -55,6 +55,13 @@ function errorText(err: unknown): string {
 }
 
 /**
+ * Header for a key Pi's config still offers but the gateway rejected. One constant for both
+ * `describe()` paths, because an invalid key is a fact we know whether or not a balance was
+ * ever cached, and the two paths must not word it differently.
+ */
+const INVALID_KEY_HEADER = 'API key is invalid or has expired.'
+
+/**
  * Refresh orchestration. **The promise returned by `refresh()` never rejects** — it is
  * called fire-and-forget, and an unhandled rejection would terminate the whole session
  * via unhandledRejection.
@@ -89,6 +96,17 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   }
 
   const applyFailure = (message: string, link?: string): void => {
+    // `unauthorized` outranks a network error. It is a fact obtained from a completed HTTP
+    // exchange, while a network error is an absence of information: letting the second
+    // overwrite the first would downgrade "your API key is invalid" into an old balance
+    // prefixed with `~`, which looks like a temporary blip, and would hide the one thing
+    // the user can actually act on. It stays until a successful refresh or reset() clears
+    // it — reset() drops `outcome`, which is where the stickiness lives.
+    //
+    // The cached usage is deliberately kept on this path, so `/sub2-usage` can still show
+    // the numbers under the invalid-key header instead of degrading to a bare error.
+    if (outcome?.kind === 'unauthorized') return
+
     outcome = { kind: 'network-error', message }
     // With a cached value the footer still points at a known site; without one there is no link to give.
     const footer = formatFooter({ kind: 'error', usage: last?.usage ?? null }, deps.palette, now())
@@ -134,6 +152,8 @@ export function createRefresher(deps: RefresherDeps): Refresher {
         return
 
       case 'unauthorized':
+        // Sticky: see applyFailure(). `last` is kept on purpose, so the detail view still has
+        // the numbers to show beneath the invalid-key header.
         outcome = { kind: 'unauthorized', message: result.message }
         status(formatFooter({ kind: 'unauthorized' }, deps.palette, now()), site.baseUrl)
         return
@@ -145,7 +165,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   }
 
   function describeHeader(): string | undefined {
-    if (outcome?.kind === 'unauthorized') return 'API key is invalid or has expired.'
+    if (outcome?.kind === 'unauthorized') return INVALID_KEY_HEADER
     if (outcome?.kind === 'network-error' && last) {
       return `Last success ${minutesAgo(last.usage.fetchedAt, now())}m ago`
     }
@@ -192,6 +212,12 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   async function describe(): Promise<string> {
     try {
       if (!last) {
+        // An unauthorized key needs no cached balance to be worth saying: it is a positive fact
+        // from a completed HTTP exchange (the same rule B1 applies to the footer), whereas a
+        // network error is only the absence of information. Without this, a 401 in a fresh
+        // session falls through to the candidate list, which blames the site and points the
+        // user at the wrong action.
+        if (outcome?.kind === 'unauthorized') return INVALID_KEY_HEADER
         // On network failure with no cached value the spec requires reporting the raw error rather than guessing at candidate sites.
         if (outcome?.kind === 'network-error') {
           return `sub2api usage query failed: ${outcome.message}`
