@@ -30,7 +30,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.83.0",

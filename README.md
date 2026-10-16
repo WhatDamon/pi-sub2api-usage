@@ -138,6 +138,7 @@ There are no timers and no background polling: the extension acts only on the ev
 ```bash
 npm test          # vitest, fully offline
 npm run typecheck # tsc --noEmit
+npm run check     # both of the above — what CI gates on
 ```
 
 The extension has no runtime dependencies. `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` are supplied by Pi at runtime, so they are declared as `peerDependencies` and deliberately not bundled — a physical copy can bypass Pi's extension module mapping and produce duplicate module instances.

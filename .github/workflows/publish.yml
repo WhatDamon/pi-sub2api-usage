@@ -53,11 +53,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Test
-        run: npm test
+      # The same entry point ci.yml uses, so the pull-request checks and the
+      # release gate cannot drift apart in what they verify.
+      - name: Typecheck and test
+        run: npm run check
 
       - name: Check whether this version is already on the registry
         id: registry

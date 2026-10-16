@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Node ${{ matrix.node }} — typecheck + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      # Report every Node version's verdict; a failure on the floor is the
+      # interesting one even when the newest version is also red.
+      fail-fast: false
+      matrix:
+        # 22.19 is the floor declared in package.json `engines.node`, which
+        # nothing else verifies; 24 is what publish.yml and local development
+        # use. Node 22 ships npm 10.x, which is fine here because trusted
+        # publishing — and its npm >= 11.5.1 requirement — only runs in
+        # publish.yml. Caching is left at setup-node's default: unlike
+        # publish.yml, there is no publish step here to keep cache-free.
+        node:
+          - '22.19'
+          - '24'
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Same entry point publish.yml gates the release on, so the two
+      # workflows cannot drift apart in what they verify.
+      - name: Typecheck and test
+        run: npm run check
