@@ -114,19 +114,17 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     if (gen !== generation) return
 
     switch (result.kind) {
-      case 'ok':
-        try {
-          const usage = normalize(result.body)
-          last = { site, usage }
-          outcome = { kind: 'ok' }
-          status(formatFooter({ kind: 'ok', usage, stale: false }, deps.palette, now()), site.baseUrl)
-        } catch {
-          // A failed normalisation counts as "this is not sub2api": clear silently rather than bother the user.
-          last = undefined
-          outcome = { kind: 'not-sub2api' }
-          status('')
-        }
+      case 'ok': {
+        // No guard around normalize(): the probe only reports `ok` for a body that passed
+        // `isSub2ApiPayload`, which is the same whitelist normalize() enforces. Were that
+        // invariant ever to break, the failure now surfaces as an error instead of being
+        // quietly reported as "this site is not sub2api".
+        const usage = normalize(result.body)
+        last = { site, usage }
+        outcome = { kind: 'ok' }
+        status(formatFooter({ kind: 'ok', usage, stale: false }, deps.palette, now()), site.baseUrl)
         return
+      }
 
       case 'not-sub2api':
         // The site is no longer sub2api, so the cached value is no longer trustworthy and must be dropped.
@@ -173,17 +171,13 @@ export function createRefresher(deps: RefresherDeps): Refresher {
 
     for (const { candidate, result } of probed) {
       if (result.kind === 'ok') {
-        try {
-          const usage = normalize(result.body)
-          hits += 1
-          // `formatPrimary` keeps this line agreeing with the detail view on precision and
-          // on terms, so one balance cannot read as two different numbers.
-          const shown = formatPrimary(usage)
-          lines.push(`${candidate.provider} ${candidate.usageUrl} → ${shown}`)
-          continue
-        } catch {
-          /* a normalisation failure counts as no match */
-        }
+        // Same invariant as in run(): an `ok` body is already known to be normalizable.
+        const usage = normalize(result.body)
+        hits += 1
+        // `formatPrimary` keeps this line agreeing with the detail view on precision and
+        // on terms, so one balance cannot read as two different numbers.
+        lines.push(`${candidate.provider} ${candidate.usageUrl} → ${formatPrimary(usage)}`)
+        continue
       }
 
       const label =

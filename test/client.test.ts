@@ -1,6 +1,11 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { fetchUsage, scrub } from '../src/client.ts'
 import { keyFingerprint, type SiteCredential } from '../src/config.ts'
+import { normalize } from '../src/normalize.ts'
+
+const fixture = (name: string): unknown =>
+  JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), 'utf8'))
 
 const site: SiteCredential = {
   provider: 'site-a',
@@ -24,9 +29,22 @@ describe('scrub', () => {
       `fetch failed for ${site.fingerprint} at gw`,
     )
   })
+
 })
 
 describe('fetchUsage classification', () => {
+  it('only reports ok for bodies normalise() accepts, which is what lets its callers skip a guard', async () => {
+    // The probe and the parser share one whitelist (`isSub2ApiPayload`), so "ok" is a promise
+    // that normalize() will not reject the body as unrecognized. `run()` and
+    // `describeCandidates()` rely on that promise and no longer wrap normalize() in a try.
+    // This test is what keeps the promise honest if the two judgements are ever duplicated.
+    for (const name of ['wallet', 'quota', 'subscription', 'rate-limit']) {
+      const result = await fetchUsage(site, { fetchImpl: respond(200, fixture(name)) })
+      if (result.kind !== 'ok') throw new Error(`${name}: expected ok, got ${result.kind}`)
+      expect(() => normalize(result.body)).not.toThrow()
+    }
+  })
+
   it('treats 200 with a mode field as sub2api', async () => {
     const r = await fetchUsage(site, { fetchImpl: respond(200, sub2apiBody) })
     expect(r.kind).toBe('ok')

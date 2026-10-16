@@ -1,6 +1,8 @@
 import type { SiteCredential } from './config.ts'
+import { isSub2ApiPayload } from './normalize.ts'
 
 export type ProbeResult =
+  /** `body` already passed `isSub2ApiPayload`, so `normalize()` cannot reject it as unrecognized. */
   | { kind: 'ok'; body: unknown }
   | { kind: 'unauthorized'; message: string }
   | { kind: 'not-sub2api' }
@@ -132,7 +134,9 @@ export async function fetchUsage(
     return { kind: 'not-sub2api' }
   }
 
-  if (!isSub2ApiBody(body)) return { kind: 'not-sub2api' }
+  // The judgement lives in normalize.ts, next to the whitelist normalize() enforces, so the
+  // probe and the parser cannot drift apart about what a sub2api body is.
+  if (!isSub2ApiPayload(body)) return { kind: 'not-sub2api' }
   if ((body as Record<string, unknown>).isValid === false) {
     return { kind: 'unauthorized', message: 'isValid=false' }
   }

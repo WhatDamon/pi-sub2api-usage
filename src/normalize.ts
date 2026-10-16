@@ -73,8 +73,6 @@ export class UnrecognizedUsageError extends Error {
   }
 }
 
-const SUB2API_WIRE_MODES = ['quota_limited', 'unrestricted'] as const
-
 /**
  * The three subscription windows, in display order.
  *
@@ -91,6 +89,32 @@ const SUBSCRIPTION_WINDOWS = [
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   return value as Record<string, unknown>
+}
+
+/**
+ * The only two top-level `mode` values sub2api ever sends, and the single place the
+ * whitelist is applied. The probe calls `isSub2ApiPayload` below rather than keeping its
+ * own copy, so the two can never disagree about what a sub2api payload is.
+ */
+const SUB2API_WIRE_MODES = ['quota_limited', 'unrestricted'] as const
+
+function isSub2ApiWireMode(mode: unknown): boolean {
+  return typeof mode === 'string' && SUB2API_WIRE_MODES.some((known) => known === mode)
+}
+
+/**
+ * Whether a response body came from sub2api.
+ *
+ * The only criterion is the top-level `mode` field: no guessing from the hostname and no
+ * reliance on the status code, because a non-sub2api gateway happily returns 200 with valid
+ * JSON. "Has a whitelisted mode field" is what separates the two.
+ *
+ * The probe checks this before handing a body over, which is what makes `kind === 'ok'`
+ * imply "`normalize()` will not reject this as unrecognized" — the invariant that lets the
+ * probe's callers skip a guard around `normalize()`.
+ */
+export function isSub2ApiPayload(body: unknown): boolean {
+  return isSub2ApiWireMode(asRecord(body)?.mode)
 }
 
 /**
@@ -279,10 +303,10 @@ export function normalize(body: unknown, now?: number): NormalizedUsage {
   const record = asRecord(body)
   if (!record) throw new UnrecognizedUsageError()
 
-  const wireMode = record.mode
-  if (wireMode !== SUB2API_WIRE_MODES[0] && wireMode !== SUB2API_WIRE_MODES[1]) {
-    throw new UnrecognizedUsageError()
-  }
+  // The same whitelist the probe checks, so any body reaching normalize() through the probe
+  // is already known to be sub2api's. This stays as the module's precondition for callers
+  // that use it on its own.
+  if (!isSub2ApiWireMode(record.mode)) throw new UnrecognizedUsageError()
 
   const quota = asRecord(record.quota)
   const quotaLimit = quota ? num(quota.limit) : null
