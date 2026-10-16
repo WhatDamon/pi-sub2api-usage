@@ -30,6 +30,18 @@ describe('scrub', () => {
     )
   })
 
+  it('also scrubs the percent-encoded form, which is how a key comes back inside a URL', () => {
+    const escaped = { ...site, apiKey: 'sk-a/b+c=1' }
+    const url = `https://gw.example.com/v1/usage?key=${encodeURIComponent(escaped.apiKey)}`
+    expect(scrub(`${url} rejected ${escaped.apiKey}`, escaped)).toBe(
+      `https://gw.example.com/v1/usage?key=${escaped.fingerprint} rejected ${escaped.fingerprint}`,
+    )
+  })
+
+  it('returns the text untouched when there is no key to hide', () => {
+    // An empty needle would otherwise splice the fingerprint in between every character.
+    expect(scrub('plain text', { ...site, apiKey: '' })).toBe('plain text')
+  })
 })
 
 describe('fetchUsage classification', () => {

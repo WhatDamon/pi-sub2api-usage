@@ -158,6 +158,18 @@ function usageLine(label: string, bucket: UsageBucket | null, unit: string): str
   return costs === null ? head : `${head} · ${costs}`
 }
 
+/**
+ * `2026-10-11` → `10-11`, and an ISO datetime → `10-11` as well.
+ *
+ * The wire layout is not enforced anywhere, so dropping a fixed five characters would
+ * print `10-11T00:00:00Z` for a datetime and would mangle any other ordering. Anything
+ * that is not an ISO date (or datetime) is passed through unchanged: a date we cannot
+ * parse is still a date the backend reported, and `—` would throw that away.
+ */
+function shortDate(date: string): string {
+  return date.replace(/^\d{4}-(\d{2}-\d{2})(?:[T ].*)?$/, '$1')
+}
+
 export function formatFooter(state: FooterState, palette: Palette, now: number): string {
   if (state.kind === 'idle') return ''
   if (state.kind === 'unauthorized') return palette.fg('error', `${FOOTER_PREFIX} !`)
@@ -234,7 +246,7 @@ export function formatDetail(usage: NormalizedUsage, site: SiteCredential): stri
 
   if (usage.daily.length > 0) {
     const recent = usage.daily.slice(-3)
-    const cells = recent.map((day) => `${day.date.slice(5)} ${amount(day.actualCost)}`)
+    const cells = recent.map((day) => `${shortDate(day.date)} ${amount(day.actualCost)}`)
     lines.push(`Last ${recent.length}d ${cells.join(' · ')}`)
   }
 

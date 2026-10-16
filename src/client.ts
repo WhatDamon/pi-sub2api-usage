@@ -13,6 +13,12 @@ export interface FetchUsageOptions {
   timeoutMs?: number
 }
 
+/**
+ * The spec pins the User-Agent to `pi/1.0.0` so the site can tell a balance probe apart from
+ * inference traffic in its own logs; the exact version is not the point and Pi exposes no
+ * version to extensions (nothing on the extension context, and its `package.json` is not an
+ * exported subpath), so this stays a literal rather than a fragile lookup.
+ */
 const USER_AGENT = 'pi/1.0.0'
 const DEFAULT_TIMEOUT_MS = 5000
 
@@ -64,20 +70,13 @@ async function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> 
 /** Replaces any occurrence of the apiKey in error text with its fingerprint. Logs and error messages may only ever contain the fingerprint. */
 export function scrub(text: string, site: SiteCredential): string {
   if (site.apiKey === '') return text
-  return text.replaceAll(site.apiKey, site.fingerprint)
-}
-
-/**
- * Decides whether a response body came from sub2api.
- *
- * The only criterion is the top-level `mode` field: no guessing from the hostname and
- * no reliance on the status code, because a non-sub2api gateway happily returns 200
- * with valid JSON. "Has a mode field" is what separates the two.
- */
-function isSub2ApiBody(body: unknown): boolean {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) return false
-  const mode = (body as Record<string, unknown>).mode
-  return mode === 'quota_limited' || mode === 'unrestricted'
+  // A gateway that echoes the key back inside a URL writes it percent-encoded (a query
+  // parameter, a Location header, a path segment), so replacing only the literal form would
+  // let that echo through. For a key with nothing that needs encoding the two forms are
+  // identical and the second replace is a no-op, which is the common case.
+  return text
+    .replaceAll(site.apiKey, site.fingerprint)
+    .replaceAll(encodeURIComponent(site.apiKey), site.fingerprint)
 }
 
 function errorMessage(err: unknown): string {

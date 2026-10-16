@@ -422,6 +422,24 @@ describe('formatDetail', () => {
     expect(out).toContain('By model m-1 $0.5000 · 100 tok')
     expect(out).not.toContain('0 req')
   })
+
+  it('renders a day given as an ISO datetime as a bare month-day', () => {
+    const out = formatDetail(
+      { ...usage, daily: [{ date: '2026-10-11T00:00:00Z', requests: 1, actualCost: 0.5 }] },
+      site,
+    )
+    expect(out).toContain('Last 1d 10-11 $0.5000')
+  })
+
+  it('passes a day whose layout it does not recognise through unchanged instead of mangling it', () => {
+    const out = formatDetail(
+      { ...usage, daily: [{ date: '11/10/2026', requests: 1, actualCost: 0.5 }] },
+      site,
+    )
+    // Dropping five characters printed `1/2026`; a date we cannot parse is still the date the
+    // backend reported, so it goes out as it came in.
+    expect(out).toContain('Last 1d 11/10/2026 $0.5000')
+  })
 })
 
 describe('formatPrimary', () => {
