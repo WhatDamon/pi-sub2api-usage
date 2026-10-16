@@ -1,6 +1,6 @@
 {
   "name": "pi-sub2api-usage",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Show the current sub2api site's balance and today's actual spend in the Pi footer (read-only)",
   "keywords": [
