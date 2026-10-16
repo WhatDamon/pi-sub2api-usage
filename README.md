@@ -124,7 +124,7 @@ That is why the detail line in wallet mode is labelled "shared across keys".
 
 Turn-by-turn refreshes are throttled to one request per 30 seconds, and only one request is ever in flight. A ten-minute run therefore issues roughly twenty requests instead of one per turn. The `agent_settled` refresh bypasses the throttle, so the number you get at the end of a run is never swallowed by the window the last `turn_end` opened.
 
-There are no timers and no background polling: the extension acts only on the events above and issues nothing at all while a session sits idle. Each request has a 5-second timeout, the second-tier candidate probe is concurrent, and every request is fire-and-forget and never blocks the conversation.
+There are no timers and no background polling: the extension acts only on the events above and issues nothing at all while a session sits idle. Each request has a 5-second timeout, the second-tier candidate probe is concurrent, and every request is fire-and-forget and never blocks the conversation. The candidate probe's **negative** verdicts are cached for the session, so reopening `/sub2-usage` does not re-hit dead ends. A candidate that answers is always probed again (its balance moves), and a new session probes everything from scratch — so if you fix a key at the gateway mid-session, start a new session to see that candidate clear.
 
 ## Security
 

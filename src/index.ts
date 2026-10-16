@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { fetchUsage } from './client.ts'
+import { fetchUsage, type ProbeResult } from './client.ts'
 import { listCandidateSites, resolveCurrentSite, type CredentialSource, type SiteCredential } from './config.ts'
 import { formatDetail, formatFooter, formatPrimary, type Palette } from './format.ts'
 import { normalize, type NormalizedUsage } from './normalize.ts'
@@ -27,6 +27,12 @@ export interface Refresher {
   refresh(options?: { force?: boolean; timeoutMs?: number }): Promise<void>
   describe(): Promise<string>
   reset(): void
+  /**
+   * Drops the session's cached probe verdicts. Deliberately separate from `reset()`: that one
+   * also runs on a model switch, while which providers Pi has configured has nothing to do
+   * with the current model.
+   */
+  resetCandidates(): void
 }
 
 /** The outcome of the last refresh. `describe()` picks its wording from this, not from whether a cached value happens to exist. */
@@ -38,6 +44,18 @@ type RefreshOutcome =
 
 function minutesAgo(fetchedAt: number, now: number): number {
   return Math.max(0, Math.round((now - fetchedAt) / 60_000))
+}
+
+/**
+ * Identity of a candidate in the probe cache: where the probe would send the request and which
+ * key it would present, which together are what its verdict is a fact about.
+ *
+ * Keying on the provider alone would be wrong twice over: rotating a key must re-check that
+ * provider instead of leaving it condemned, and changing its `baseUrl` must point the probe at
+ * the new endpoint instead of reusing the old one's answer.
+ */
+function candidateKey(candidate: SiteCredential): string {
+  return `${candidate.provider}\u0000${candidate.usageUrl}\u0000${candidate.fingerprint}`
 }
 
 /**
@@ -73,6 +91,16 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   /** When the last request was dispatched. Starts at -Infinity so the very first refresh is never throttled. */
   let lastDispatchAt = Number.NEGATIVE_INFINITY
   const minIntervalMs = deps.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS
+
+  /**
+   * Verdicts from the second-tier probe, for this session only.
+   *
+   * `/sub2-usage` is a manual command, and every call used to re-probe every configured
+   * provider — including the ones already known to be dead ends, at up to 5s each. The spec
+   * asks for negative results to be cached within the session. Only negatives are stored: a
+   * balance moves between two calls, but "this endpoint is not sub2api" does not.
+   */
+  const candidateVerdicts = new Map<string, Exclude<ProbeResult, { kind: 'ok' }>>()
 
   /**
    * Generation counter. `reset()` increments it, which expires any **in-flight** refresh.
@@ -177,13 +205,19 @@ export function createRefresher(deps: RefresherDeps): Refresher {
 
     // Probe concurrently: serially, unreachable candidates would drag /sub2-usage out to N x timeout (the spec requires concurrency).
     const probed = await Promise.all(
-      candidates.map(async (candidate) => ({
-        candidate,
-        result: await fetchUsage(candidate, {
+      candidates.map(async (candidate) => {
+        const key = candidateKey(candidate)
+        // Only negatives are in here, so a hit means "this one is already known to be a dead end".
+        const known = candidateVerdicts.get(key)
+        if (known) return { candidate, result: known }
+
+        const result = await fetchUsage(candidate, {
           fetchImpl: deps.fetchImpl,
           timeoutMs: deps.timeoutMs,
-        }),
-      })),
+        })
+        if (result.kind !== 'ok') candidateVerdicts.set(key, result)
+        return { candidate, result }
+      }),
     )
 
     const lines: string[] = ['The current model is not a sub2api site.']
@@ -273,7 +307,11 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     lastDispatchAt = Number.NEGATIVE_INFINITY
   }
 
-  return { refresh, describe, reset }
+  function resetCandidates(): void {
+    candidateVerdicts.clear()
+  }
+
+  return { refresh, describe, reset, resetCandidates }
 }
 
 export default function createExtension(pi: ExtensionAPI): void {
@@ -311,6 +349,7 @@ export default function createExtension(pi: ExtensionAPI): void {
   pi.on('session_start', (_event, ctx) => {
     currentCtx = ctx
     refresher.reset()
+    refresher.resetCandidates()
     kick(ctx)
   })
 
@@ -347,6 +386,7 @@ export default function createExtension(pi: ExtensionAPI): void {
   pi.on('session_shutdown', (_event, ctx) => {
     try {
       refresher.reset()
+      refresher.resetCandidates()
       setFooter(ctx, undefined)
     } catch {
       /* A cleanup failure on the exit path must not affect Pi shutting down */

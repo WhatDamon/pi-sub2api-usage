@@ -644,4 +644,145 @@ describe('fix round: review findings', () => {
     for (const release of releases) release()
     await pending
   })
+
+  const deadFetch = (counter: { calls: number }): typeof fetch =>
+    (async () => {
+      counter.calls += 1
+      return jsonResponse({ error: 'nope' })
+    }) as unknown as typeof fetch
+
+  const candidateRefresher = (overrides: {
+    listSites: () => Promise<SiteCredential[]>
+    fetchImpl: typeof fetch
+  }) =>
+    createRefresher({
+      resolveSite: async () => undefined,
+      palette: PLAIN_PALETTE,
+      setStatus: () => {},
+      ...overrides,
+    })
+
+  it('#3 a dead-end candidate is probed once per session, not once per /sub2-usage', async () => {
+    const counter = { calls: 0 }
+    const candidates = ['a', 'b', 'c'].map((provider) => ({ ...site, provider }))
+    const refresher = candidateRefresher({ listSites: async () => candidates, fetchImpl: deadFetch(counter) })
+
+    const first = await refresher.describe()
+    expect(counter.calls).toBe(3)
+
+    const second = await refresher.describe()
+    // Reopening the detail view must not re-hit known dead ends: this is the spec's
+    // "cache negative results within the session" requirement.
+    expect(counter.calls).toBe(3)
+    // A cached verdict has to be indistinguishable from a fresh one, or the cache is a
+    // rendering change rather than a cache.
+    expect(second).toBe(first)
+  })
+
+  it('#3 rotating the key re-checks a provider that was already written off', async () => {
+    const counter = { calls: 0 }
+    let candidates: SiteCredential[] = [{ ...site, provider: 'a' }]
+    const refresher = candidateRefresher({ listSites: async () => candidates, fetchImpl: deadFetch(counter) })
+
+    await refresher.describe()
+    expect(counter.calls).toBe(1)
+
+    // Same provider, new key: the old verdict was about the old key and must not outlive it.
+    candidates = [{ ...site, provider: 'a', apiKey: 'sk-rotated-abcdef', fingerprint: 'cafebabe' }]
+    await refresher.describe()
+    expect(counter.calls).toBe(2)
+  })
+
+  it('#3 pointing a provider somewhere else re-checks the new endpoint too', async () => {
+    const counter = { calls: 0 }
+    let candidates: SiteCredential[] = [{ ...site, provider: 'a' }]
+    const refresher = candidateRefresher({ listSites: async () => candidates, fetchImpl: deadFetch(counter) })
+
+    await refresher.describe()
+    expect(counter.calls).toBe(1)
+
+    // The verdict is a fact about an endpoint + key pair, so a moved endpoint needs its own probe.
+    candidates = [{ ...site, provider: 'a', usageUrl: 'https://gw2.example.com/v1/usage' }]
+    await refresher.describe()
+    expect(counter.calls).toBe(2)
+  })
+
+  it('#3 a candidate that answers is probed again every time, because its balance moves', async () => {
+    const counter = { calls: 0 }
+    const alive = (async () => {
+      counter.calls += 1
+      return jsonResponse(walletBody)
+    }) as unknown as typeof fetch
+    const refresher = candidateRefresher({ listSites: async () => [{ ...site, provider: 'a' }], fetchImpl: alive })
+
+    // Caching this one would freeze the candidate line at a balance that no longer holds.
+    await refresher.describe()
+    await refresher.describe()
+    expect(counter.calls).toBe(2)
+  })
+
+  it('#3 reset() keeps the probe cache while resetCandidates() drops it', async () => {
+    const counter = { calls: 0 }
+    const candidates = ['a', 'b', 'c'].map((provider) => ({ ...site, provider }))
+    const refresher = candidateRefresher({ listSites: async () => candidates, fetchImpl: deadFetch(counter) })
+
+    await refresher.describe()
+    expect(counter.calls).toBe(3)
+
+    // reset() also runs on a model switch, and which providers Pi has configured has
+    // nothing to do with the current model, so it must not throw this cache away.
+    refresher.reset()
+    await refresher.describe()
+    expect(counter.calls).toBe(3)
+
+    refresher.resetCandidates()
+    await refresher.describe()
+    expect(counter.calls).toBe(6)
+  })
+
+  it('#3 session_start drops the cached verdicts, so a new session re-probes the providers', async () => {
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>()
+    let command: ((args: unknown, ctx: unknown) => Promise<void>) | undefined
+    const counter = { calls: 0 }
+    const original = globalThis.fetch
+    globalThis.fetch = deadFetch(counter)
+    try {
+      createExtension({
+        registerCommand: (_name: string, options: { handler: (args: unknown, ctx: unknown) => Promise<void> }) => {
+          command = options.handler
+        },
+        on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+          handlers.set(event, handler)
+          return () => {}
+        },
+      } as never)
+
+      // No current model, so run() finds no site and sends nothing of its own: every request
+      // counted here belongs to the candidate probe, which keeps the assertions exact.
+      const ctx = {
+        mode: 'rpc',
+        hasUI: true,
+        model: undefined,
+        modelRegistry: {
+          getApiKeyForProvider: async () => site.apiKey,
+          getAll: () => [{ provider: 'site-a', baseUrl: site.baseUrl }],
+        },
+        ui: { theme: { fg: (_color: string, text: string) => text }, setStatus: () => {}, notify: () => {} },
+      }
+
+      await handlers.get('session_start')?.({ type: 'session_start' }, ctx)
+      expect(counter.calls).toBe(0)
+
+      await command?.({}, ctx)
+      expect(counter.calls).toBe(1) // the configured provider was probed
+      await command?.({}, ctx)
+      expect(counter.calls).toBe(1) // and its verdict was reused
+
+      await handlers.get('session_start')?.({ type: 'session_start' }, ctx)
+      await command?.({}, ctx)
+      expect(counter.calls).toBe(2) // a new session starts from scratch
+    } finally {
+      globalThis.fetch = original
+    }
+  })
 })
