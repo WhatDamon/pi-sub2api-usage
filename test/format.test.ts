@@ -8,11 +8,10 @@ import {
   formatFooter,
   formatPrimary,
   formatTokens,
-  truncateToWidth,
-  visibleWidth,
   type FooterState,
   type Palette,
 } from '../src/format.ts'
+import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 import type { NormalizedUsage } from '../src/normalize.ts'
 import type { SiteCredential } from '../src/config.ts'
 
@@ -50,74 +49,46 @@ const site: SiteCredential = {
   fingerprint: 'deadbeef',
 }
 
-describe('visibleWidth', () => {
-  it('counts ASCII as 1 column, CJK as 2, and combining marks as 0', () => {
-    expect(visibleWidth('sub2 $1.88')).toBe(10)
+/**
+ * Width and truncation are delegated to pi-tui, so these tests pin the properties the
+ * footer relies on rather than pi-tui's internals. They are the contract that has to
+ * survive a peer-dependency bump.
+ */
+describe('width contract (delegated to pi-tui)', () => {
+  const GREEN = '\x1b[32m'
+  const RESET = '\x1b[0m'
+  const LINK_OPEN = '\x1b]8;;https://gw.example.com\x1b\\'
+  const LINK_CLOSE = '\x1b]8;;\x1b\\'
+
+  it('counts ASCII as 1 column, CJK as 2, combining marks and escapes as 0', () => {
+    expect(visibleWidth('Sub2 $1.88')).toBe(10)
     expect(visibleWidth('今日')).toBe(4)
-    expect(visibleWidth('今 $1.88')).toBe(8)
     expect(visibleWidth('e\u0301')).toBe(1)
-    expect(visibleWidth('（原价）')).toBe(8)
+    expect(visibleWidth(`${GREEN}今日${RESET}`)).toBe(4)
+    expect(visibleWidth(`${LINK_OPEN}Sub2 $1.88${LINK_CLOSE}`)).toBe(10)
   })
 
-  it('ANSI escape sequences take no visible width', () => {
-    expect(visibleWidth('\x1b[32m$\x1b[0m')).toBe(1)
-    expect(visibleWidth('\x1b[32m$1.88\x1b[0m')).toBe(5)
-    expect(visibleWidth('\x1b[32m今日\x1b[0m')).toBe(4)
-    expect(visibleWidth('\x1b[1;32mabc\x1b[0m')).toBe(3)
-  })
-})
-
-describe('truncateToWidth', () => {
-  it('returns the text unchanged when it fits', () => {
-    expect(truncateToWidth('abc', 5)).toBe('abc')
-  })
-
-  it('truncates by visible width when it overflows', () => {
-    expect(truncateToWidth('abcde', 3)).toBe('abc')
-  })
-
-  it('never cuts a CJK character in half', () => {
-    expect(visibleWidth(truncateToWidth('今日余额', 5))).toBeLessThanOrEqual(5)
-    expect(truncateToWidth('今日余额', 5)).toBe('今日')
-  })
-
-  it('returns an empty string when max is 0 or negative', () => {
-    expect(truncateToWidth('abc', 0)).toBe('')
-    expect(truncateToWidth('abc', -1)).toBe('')
-  })
-
-  it('returns coloured text unchanged when it fits, keeping every escape byte intact', () => {
-    expect(truncateToWidth('\x1b[32m$1.88\x1b[0m', 40)).toBe('\x1b[32m$1.88\x1b[0m')
-  })
-
-  it('never truncates in the middle of an escape sequence', () => {
-    const out = truncateToWidth('\x1b[32mabcdefghij\x1b[0m', 5)
-    expect(out.startsWith('\x1b[32m')).toBe(true)
-    expect(out).toContain('abcde')
-    expect(out).not.toMatch(/\x1b\[[0-9;]*$/)
-  })
-
-  it('closes the colour on truncation so it cannot leak into another extension on the same line', () => {
-    expect(truncateToWidth('\x1b[32mabcdefghij\x1b[0m', 5)).toBe('\x1b[32mabcde\x1b[0m')
-  })
-
-  it('truncates coloured text by visible width, not by byte count', () => {
-    const out = truncateToWidth('\x1b[31m今日余额\x1b[0m', 5)
+  it('never cuts a full-width character in half', () => {
+    // It always emits a reset when it actually cuts, so the kept text is followed by one.
+    const out = truncateToWidth('今日余额', 5, '')
+    expect(out).toBe(`今日${RESET}`)
     expect(visibleWidth(out)).toBeLessThanOrEqual(5)
-    expect(out).toContain('今日')
   })
 
-  it('OSC 8 hyperlinks take no visible width', () => {
-    expect(visibleWidth('\x1b]8;;https://gw.example.com\x1b\\Sub2 $1.88\x1b]8;;\x1b\\')).toBe(10) // 'Sub2 $1.88' is 10 characters
-    expect(visibleWidth('\x1b]8;;https://x\x1b\\abc\x1b]8;;\x1b\\')).toBe(3)
+  it('returns text that fits byte-identical, so the common footer path adds no escapes', () => {
+    const coloured = `${GREEN}Sub2 $1.88${RESET}`
+    expect(truncateToWidth(coloured, FOOTER_MAX_WIDTH, '')).toBe(coloured)
   })
 
-  it('never truncates inside an OSC 8 sequence and closes the link when cutting', () => {
-    const linked = '\x1b]8;;https://gw.example.com\x1b\\Sub2 $1.88\x1b]8;;\x1b\\'
-    const out = truncateToWidth(linked, 5)
-    expect(visibleWidth(out)).toBeLessThanOrEqual(5)
-    expect(out).toContain('\x1b]8;;https://gw.example.com\x1b\\')
-    expect(out.endsWith('\x1b]8;;\x1b\\')).toBe(true)
+  it('closes colour and hyperlink when it cuts, so our segment cannot leak onto another extension', () => {
+    const coloured = truncateToWidth(`${GREEN}Sub2 $1.88 · Today $0.19${RESET}`, 8, '')
+    expect(coloured.startsWith(GREEN)).toBe(true)
+    expect(coloured.endsWith(RESET)).toBe(true)
+    expect(coloured).not.toMatch(/\x1b\[[0-9;]*$/)
+
+    const linked = truncateToWidth(`${LINK_OPEN}Sub2 $1.88${LINK_CLOSE}`, 5, '')
+    expect(linked.startsWith(LINK_OPEN)).toBe(true)
+    expect(linked.endsWith(`${LINK_CLOSE}${RESET}`)).toBe(true)
   })
 })
 
@@ -246,6 +217,17 @@ describe('formatFooter', () => {
     for (const [, footerState] of cases) {
       expect(visibleWidth(formatFooter(footerState, PLAIN_PALETTE, NOW))).toBeLessThanOrEqual(FOOTER_MAX_WIDTH)
     }
+  })
+
+  it('measures emoji the way the rest of the UI does, so a wide label is not dropped early', () => {
+    // Four ZWJ family emoji. This is one grapheme each, so pi-tui counts 2 columns per
+    // family; the per-code-point table this replaced counted 8 (2+1+2+1+2) and measured the
+    // line at 41 columns, which dropped the segment entirely.
+    const family = '👨‍👩‍👧'
+    const labelled = state({ mode: 'rate_limit', lanes: [lane(family.repeat(4), 82)] })
+    const out = formatFooter(labelled, PLAIN_PALETTE, NOW)
+    expect(out).toBe(`Sub2 ${family.repeat(4)} 82%`)
+    expect(visibleWidth(out)).toBeLessThanOrEqual(FOOTER_MAX_WIDTH)
   })
 
   it('drops whole segments instead of cutting one in half when the line is too long', () => {

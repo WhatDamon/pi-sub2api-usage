@@ -1,3 +1,16 @@
+/**
+ * Width and truncation are delegated to pi-tui rather than reimplemented here.
+ *
+ * `String.length` is unusable for this: CJK takes 2 columns, combining marks take 0, and
+ * ANSI colour plus OSC 8 links take 0. Getting that right needs grapheme segmentation and
+ * emoji width tables, which pi-tui already has and which this package already depends on —
+ * so the footer now measures the same way the rest of the UI does.
+ *
+ * `truncateToWidth(text, max, '')` is the contract used below: no ellipsis, and when it
+ * actually cuts it closes any open hyperlink and emits an SGR reset, so our segment cannot
+ * leak colour onto another extension's status text further along the same line.
+ */
+import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 import type { SiteCredential } from './config.ts'
 import type { NormalizedUsage, UsageBucket, UsageLane } from './normalize.ts'
 
@@ -74,135 +87,6 @@ function renderLane(lane: UsageLane, palette: Palette, now: number): string {
   const countdown = formatCountdown(lane.resetAt, now)
   const reset = countdown === null ? '' : ` ${palette.fg('dim', `[⟳ ${countdown}]`)}`
   return `${label}${palette.fg(laneColor(lane.percent), `${Math.round(lane.percent)}%`)}${reset}`
-}
-
-/** East Asian full-width ranges. A hit occupies 2 columns. */
-const WIDE_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0x1100, 0x115f],
-  [0x2e80, 0xa4cf],
-  [0xac00, 0xd7a3],
-  [0xf900, 0xfaff],
-  [0xfe30, 0xfe6f],
-  [0xff00, 0xff60],
-  [0xffe0, 0xffe6],
-  [0x1f300, 0x1faff],
-]
-
-function charWidth(char: string): number {
-  if (/\p{M}/u.test(char)) return 0
-  const codePoint = char.codePointAt(0) ?? 0
-  for (const [low, high] of WIDE_RANGES) {
-    if (codePoint >= low && codePoint <= high) return 2
-  }
-  return codePoint >= 0x20000 ? 2 : 1
-}
-
-/** Matches one ANSI SGR sequence such as `\x1b[32m`, `\x1b[1;32m` or `\x1b[0m`. */
-const SGR_PATTERN = /^\x1b\[[0-9;]*m/
-
-/**
- * Matches one OSC 8 hyperlink such as `\x1b]8;;URL\x1b\\` (the closing sequence
- * carries an empty URL).
- *
- * OSC 8 is **not** zero-width the way SGR is: without recognising it, every character
- * of the URL would count as a visible column and the footer width limit would be
- * meaningless.
- */
-const OSC8_PATTERN = /^\x1b\]8;;([^\x1b\x07]*)(?:\x1b\\|\x07)/
-
-const LINK_CLOSE = '\x1b]8;;\x1b\\'
-
-type EscapeKind = 'open' | 'reset' | 'link-open' | 'link-close'
-
-interface Escape {
-  text: string
-  kind: EscapeKind
-}
-
-/** `\x1b[0m`, `\x1b[m` and `\x1b[0;0m` are all resets; any other SGR counts as opening a style. */
-function isResetSgr(sgr: string): boolean {
-  return sgr
-    .slice(2, -1)
-    .split(';')
-    .every((part) => part === '' || part === '0')
-}
-
-/** Recognises the escape sequence at `index`; returns null when there is none. */
-function escapeAt(text: string, index: number): Escape | null {
-  const slice = text.slice(index)
-
-  const sgr = SGR_PATTERN.exec(slice)
-  if (sgr !== null) return { text: sgr[0], kind: isResetSgr(sgr[0]) ? 'reset' : 'open' }
-
-  const osc = OSC8_PATTERN.exec(slice)
-  if (osc !== null) return { text: osc[0], kind: (osc[1] ?? '') === '' ? 'link-close' : 'link-open' }
-
-  return null
-}
-
-/**
- * Terminal visible width. **`String.length` cannot be used here** — CJK characters
- * take 2 columns, combining marks take 0, and ANSI colour plus OSC 8 links take 0.
- * Getting any one of those wrong makes the footer width limit meaningless.
- */
-export function visibleWidth(text: string): number {
-  let total = 0
-  let index = 0
-
-  while (index < text.length) {
-    const escape = escapeAt(text, index)
-    if (escape !== null) {
-      index += escape.text.length
-      continue
-    }
-    const char = String.fromCodePoint(text.codePointAt(index) ?? 0)
-    total += charWidth(char)
-    index += char.length
-  }
-
-  return total
-}
-
-/**
- * Truncate to a visible width, never emitting half a full-width character and never
- * cutting an escape sequence in two.
- *
- * If a colour or hyperlink is still open at the cut it must be closed explicitly:
- * Pi joins every extension's status into one line with spaces, so an unclosed colour
- * would leak onto whatever another extension renders after us.
- */
-export function truncateToWidth(text: string, max: number): string {
-  if (max <= 0) return ''
-
-  let total = 0
-  let out = ''
-  let index = 0
-  let styleOpen = false
-  let linkOpen = false
-
-  const close = (): string => `${linkOpen ? LINK_CLOSE : ''}${styleOpen ? '\x1b[0m' : ''}`
-
-  while (index < text.length) {
-    const escape = escapeAt(text, index)
-    if (escape !== null) {
-      out += escape.text
-      if (escape.kind === 'open') styleOpen = true
-      else if (escape.kind === 'reset') styleOpen = false
-      else if (escape.kind === 'link-open') linkOpen = true
-      else linkOpen = false
-      index += escape.text.length
-      continue
-    }
-
-    const char = String.fromCodePoint(text.codePointAt(index) ?? 0)
-    const width = charWidth(char)
-    if (total + width > max) return out + close()
-    total += width
-    out += char
-    index += char.length
-  }
-
-  return out
 }
 
 export function formatAmount(value: number | null, unit = 'USD', digits = 4): string {
@@ -322,10 +206,12 @@ export function formatFooter(state: FooterState, palette: Palette, now: number):
   // Nothing fitted at all, and a bare label carries no information: fall back to plain
   // truncation so as much of the first segment as possible is still shown.
   if (placed === 0) {
-    return truncateToWidth(`${label} ${stale ? '~' : ''}${segments.join(separator)}`, FOOTER_MAX_WIDTH)
+    return truncateToWidth(`${label} ${stale ? '~' : ''}${segments.join(separator)}`, FOOTER_MAX_WIDTH, '')
   }
 
-  return truncateToWidth(out, FOOTER_MAX_WIDTH)
+  // `out` was built to fit, so this is normally a no-op; it stays as a guard for the case
+  // where a single segment is itself wider than the limit.
+  return truncateToWidth(out, FOOTER_MAX_WIDTH, '')
 }
 
 export function formatDetail(usage: NormalizedUsage, site: SiteCredential): string {
